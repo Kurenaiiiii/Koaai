@@ -1,0 +1,6 @@
+/target
+Changelog.md
+.env
+bot.db
+*.db-wal
+*.db-shm

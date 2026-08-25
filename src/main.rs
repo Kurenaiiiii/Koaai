@@ -1,0 +1,332 @@
+mod commands;
+mod config;
+mod core;
+mod db;
+mod logger;
+mod player;
+mod settings;
+mod sources;
+mod state;
+mod ui;
+
+use std::sync::Arc;
+
+use poise::serenity_prelude as serenity;
+
+pub use crate::core::Core;
+
+pub struct Data {
+    pub core: Arc<Core>,
+}
+
+impl std::fmt::Debug for Data {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Data").finish_non_exhaustive()
+    }
+}
+
+type Error = Box<dyn std::error::Error + Send + Sync>;
+type Context<'a> = poise::Context<'a, Data, Error>;
+
+/// Per-guild prefix lookup for the prefix framework. Falls back to the
+/// configured default outside guilds / when unset.
+fn dynamic_prefix(
+    ctx: poise::PartialContext<'_, Data, Error>,
+) -> poise::BoxFuture<'_, Result<Option<std::borrow::Cow<'static, str>>, Error>> {
+    Box::pin(async move {
+        let core = ctx.framework.user_data().core.clone();
+        Ok(Some(std::borrow::Cow::Owned(core.prefix(ctx.guild_id).await)))
+    })
+}
+
+fn init_logging(cfg: &settings::Config) {
+    let level = match cfg.logging.level.as_str() {
+        "warn" => logger::Level::Warn,
+        "error" => logger::Level::Error,
+        _ => logger::Level::Info,
+    };
+    logger::init(
+        level,
+        cfg.logging.file.enabled,
+        &cfg.logging.file.path.clone(),
+    );
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .try_init();
+}
+
+const YTDLP_KNOWN_GOOD: &str = "2026.08.20";
+
+struct Handler {
+    core: Arc<Core>,
+    commands: Arc<Vec<poise::Command<Data, Error>>>,
+    registered: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl serenity::EventHandler for Handler {
+    async fn dispatch(&self, ctx: &serenity::all::Context, event: &serenity::FullEvent) {
+        use serenity::FullEvent::*;
+        match event {
+            Ready { data_about_bot, .. } => {
+                log_started!(
+                    "gateway",
+                    "ready as {} ({})",
+                    data_about_bot.user.name,
+                    data_about_bot.user.id
+                );
+                if !self.registered.swap(
+                    true,
+                    std::sync::atomic::Ordering::SeqCst,
+                ) {
+                    match std::env::var("DEV_GUILD_ID")
+                        .ok()
+                        .and_then(|g| g.parse::<u64>().ok())
+                        .map(serenity::GuildId::new)
+                    {
+                        Some(gid) => {
+                            match poise::builtins::register_in_guild(
+                                &ctx.http,
+                                self.commands.as_slice(),
+                                gid,
+                            )
+                            .await
+                            {
+                                Ok(()) => log_started!("discord", "commands registered to dev guild {gid}"),
+                                Err(e) => log_error!("discord", "guild registration failed: {e}"),
+                            }
+                        }
+                        None => {
+                            match poise::builtins::register_globally(
+                                &ctx.http,
+                                self.commands.as_slice(),
+                            )
+                            .await
+                            {
+                                Ok(()) => log_started!("discord", "commands registered globally"),
+                                Err(e) => log_error!("discord", "global registration failed: {e}"),
+                            }
+                        }
+                    }
+
+                    // Restart-proof 24/7: come back to every stay channel
+                    // automatically after boot/reconnect.
+                    player::rejoin_stay_channels(&self.core).await;
+                }
+            }
+            VoiceStateUpdate { old: Some(old), new, .. } => {
+                player::handle_voice_state_update(ctx, &self.core, old, new).await;
+            }
+            InteractionCreate { interaction, .. } => {
+                match interaction {
+                    // Router precedence mirrors old index.js:320-348:
+                    // report buttons/selects first, then music/help router;
+                    // modals are always report.
+                    serenity::model::application::Interaction::Component(comp) => {
+                        let handled = commands::report::component(&self.core, comp).await;
+                        if !handled {
+                            let _ = ui::router::component(&self.core, ctx, comp).await;
+                        }
+                    }
+                    serenity::model::application::Interaction::Modal(m) => {
+                        let guild_name = m
+                            .guild_id
+                            .and_then(|g| ctx.cache.guild(g))
+                            .map(|g| g.name.clone().into_string());
+                        let _ = commands::report::modal(&self.core, guild_name, m).await;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn check_token(token: &str) -> Result<(String, String), String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://discord.com/api/v10/users/@me")
+        .header("Authorization", format!("Bot {token}"))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("token check request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("token rejected by Discord (HTTP {})", resp.status()));
+    }
+    let body: serde_json::Value =
+        resp.json().await.map_err(|e| format!("bad token-check response: {e}"))?;
+    let username = body["username"]
+        .as_str()
+        .ok_or("token-check response missing username")?
+        .to_string();
+    let id = body["id"].as_str().unwrap_or_default().to_string();
+    Ok((id, username))
+}
+
+#[tokio::main]
+async fn main() {
+    dotenvy::dotenv().ok();
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let cfg = settings::load();
+    if cfg.banner {
+        logger::print_banner(env!("CARGO_PKG_VERSION"));
+    }
+    init_logging(&cfg);
+
+    log_started!("bootstrap", "koaai v{} (rusqlite {})",
+        env!("CARGO_PKG_VERSION"), rusqlite::version());
+
+    sources::init(cfg.sources.clone());
+
+    let token = std::env::var("TOKEN").expect("TOKEN must be set in env");
+
+    match sources::probe_version().await {
+        Ok(v) => {
+            log_info!("selfcheck", "yt-dlp {v}");
+            if v.as_str() < YTDLP_KNOWN_GOOD {
+                log_warn!("selfcheck",
+                    "yt-dlp {v} is older than the known-good {YTDLP_KNOWN_GOOD} nightly; YouTube may return 403 - update with `pip install --upgrade yt-dlp --pre`");
+            }
+        }
+        Err(e) => {
+            log_error!("selfcheck", "{e}");
+            std::process::exit(1);
+        }
+    };
+    let database = match db::Db::open("bot.db") {
+        Ok(d) => d,
+        Err(e) => {
+            log_error!("selfcheck", "db open failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = database.checkpoint() {
+        log_error!("selfcheck", "db checkpoint: {e}");
+        std::process::exit(1);
+    }
+
+    let (bot_id_raw, bot_name) = match check_token(&token).await {
+        Ok(v) => v,
+        Err(e) => {
+            log_error!("selfcheck", "{e}");
+            std::process::exit(1);
+        }
+    };
+    let bot_id = bot_id_raw.parse::<u64>().map_or_else(
+        |_| serenity::model::id::UserId::new(0),
+        serenity::model::id::UserId::new,
+    );
+    log_info!("selfcheck", "token valid, identity is @{bot_name}");
+    log_started!("selfcheck", "all checks passed");
+
+    let token_parsed =
+        token.parse::<serenity::Token>().expect("invalid bot token format");
+    let http = Arc::new(serenity::Http::new(token_parsed.clone()));
+
+    let voice = songbird::Songbird::serenity();
+    let core = Core::load(database, http.clone(), voice.clone(), bot_id, cfg)
+        .await
+        .unwrap_or_else(|e| {
+            log_error!("boot", "loading core state: {e}");
+            std::process::exit(1);
+        });
+
+    // Crash-safe SQLite: WAL checkpoint every hour so even a hard kill never
+    // loses more than an hour of prefix/24-7/report writes.
+    {
+        let core2 = core.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                if let Err(e) = core2.db.checkpoint() {
+                    log_warn!("db", "hourly checkpoint failed: {e}");
+                }
+            }
+        });
+    }
+
+    // Graceful shutdown on SIGINT/SIGTERM: flush DB, drop voice connections,
+    // exit. No data loss, no zombie voice states.
+    {
+        let core2 = core.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut term =
+                signal(SignalKind::terminate()).expect("install SIGTERM handler");
+            let mut intr =
+                signal(SignalKind::interrupt()).expect("install SIGINT handler");
+            tokio::select! {
+                _ = term.recv() => {},
+                _ = intr.recv() => {},
+            }
+            log_warn!("shutdown", "signal received — flushing state and leaving voice");
+
+            let mut guilds: Vec<serenity::model::id::GuildId> =
+                core2.stay_channels_snapshot().await.into_iter().map(|(g, _)| g).collect();
+            for g in core2.registry.guild_ids() {
+                if !guilds.contains(&g) {
+                    guilds.push(g);
+                }
+            }
+            for g in guilds {
+                let _ = core2.voice.remove(g).await;
+            }
+            if let Err(e) = core2.db.checkpoint() {
+                log_error!("shutdown", "final db checkpoint failed: {e}");
+            } else {
+                log_started!("shutdown", "database flushed");
+            }
+            std::process::exit(0);
+        });
+    }
+
+    let all_commands = Arc::new(commands::all());
+    let handler = Handler {
+        core: core.clone(),
+        commands: all_commands.clone(),
+        registered: std::sync::atomic::AtomicBool::new(false),
+    };
+
+    let intents =
+        serenity::GatewayIntents::non_privileged() | serenity::GatewayIntents::MESSAGE_CONTENT;
+
+    let mut fopts = poise::FrameworkOptions::<Data, Error> {
+        prefix_options: poise::PrefixFrameworkOptions {
+            prefix: Some(core.default_prefix_cfg().into()),
+            dynamic_prefix: Some(dynamic_prefix),
+            ..Default::default()
+        },
+        on_error: |error| {
+            Box::pin(async move {
+                log_error!("commands", "{error:?}");
+            })
+        },
+        ..Default::default()
+    };
+    fopts.commands = commands::all();
+    let framework = poise::FrameworkBuilder::<Data, Error>::default()
+        .options(fopts)
+        .build();
+
+    let data = Arc::new(Data { core });
+
+    let mut client = serenity::Client::builder(token_parsed, intents)
+        .framework(Box::new(framework))
+        .data(data)
+        .voice_manager(voice)
+        .event_handler(Arc::new(handler))
+        .await
+        .expect("client creation failed");
+
+    if let Err(e) = client.start().await {
+        log_error!("discord", "client error: {e}");
+        std::process::exit(1);
+    }
+}

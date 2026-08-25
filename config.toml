@@ -1,0 +1,31 @@
+# Koaai configuration — edit freely, restart to apply.
+# Secrets (TOKEN, SPOTIFY_CLIENT_ID/SECRET) stay in .env.
+
+[bot]
+default_prefix = "+"
+items_per_page = 10
+
+[audio]
+default_volume = 100           # starting volume per guild (1-200)
+max_volume = 200               # volume clamp ceiling
+bitrate_kbps = 256             # opus target (0 = auto, max 512); YT sources pass through untouched while volume is 100%
+np_delete_previous = true      # delete the old Now Playing card when the next starts
+channel_status_updates = true  # set the VC status to the current track
+auto_leave_secs = 300          # leave VC after this many idle seconds
+empty_channel_grace_secs = 10  # wait before leaving an empty channel
+error_streak_rejoin_at = 3     # consecutive track errors before voice rejoin
+max_consecutive_errors = 6     # consecutive errors before stopping playback
+
+[sources]
+youtube_enabled = true
+soundcloud_enabled = true
+spotify_enabled = true         # also needs SPOTIFY_CLIENT_ID/SECRET in .env
+apple_music_enabled = true
+default_search = "ytsearch"    # (legacy) name searches use the fixed chain ytmusic->youtube->spotify->soundcloud
+
+[logging]
+level = "info"                 # info | warn | error
+file.enabled = false
+file.path = "logs"
+
+banner = true                  # ascii art on startup
