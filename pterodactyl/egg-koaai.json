@@ -1,122 +1,102 @@
 {
-  "_comment": "Koaai \u2014 single-process Rust Discord music bot. Requires the release binary URL; see pterodactyl/README.md",
-  "meta": {
-    "version": "PTDL_v2",
-    "update_url": null
-  },
-  "exported_at": "2026-08-26T00:00:00+00:00",
-  "name": "Koaai (Rust music bot)",
-  "author": "kurenai@koaai.dev",
-  "description": "Single-process Discord music bot written in Rust. Downloads the koaai binary, installs yt-dlp nightly and Node.js, then runs the bot with graceful SIGINT shutdown.",
-  "features": null,
-  "docker_images": {
-    "Debian Bookworm": "ghcr.io/parkervcp/yolks:debian_bookworm"
-  },
-  "file_denylist": [],
-  "startup": {
-    "done": "ready as",
-    "user_interaction": [],
-    "command": "./koaai"
-  },
-  "config": {
-    "files": {},
-    "startup": {
-      "done": "ready as"
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL - PTERODACTYL.IO",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
     },
-    "logs": {},
-    "stop": "^C"
-  },
-  "scripts": {
-    "installation": {
-      "script": "#!/bin/bash\nset -ex\n\napt-get update\napt-get install -y --no-install-recommends ca-certificates curl xz-utils python3-minimal python3-pip\n\n# yt-dlp \u2014 project requires a recent build; prefer prereleases (nightly channel)\npython3 -m pip install --upgrade --pre yt-dlp \\\n  || python3 -m pip install --upgrade --pre yt-dlp --break-system-packages\nln -sf \"$(command -v yt-dlp)\" /usr/local/bin/yt-dlp\nyt-dlp --version\n\n# Node.js runtime (passed to every yt-dlp call via --js-runtimes node)\nmkdir -p /mnt/server/bin\ncd /tmp\nNODE_VERSION=22.14.0\ncurl -sSL -o node.tar.xz \"https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz\"\ntar -xf node.tar.xz\ncp \"node-v${NODE_VERSION}-linux-x64/bin/node\" /mnt/server/bin/node\n/mnt/server/bin/node --version\n\n# koaai binary \u2014 set KOAAI_DOWNLOAD_URL to fetch it, or leave empty and\n# upload the binary yourself via SFTP / panel file manager (nothing compiles)\ncd /mnt/server\nif [ -n \"$KOAAI_DOWNLOAD_URL\" ]; then\n    if [ -n \"$GITHUB_TOKEN\" ]; then\n        curl -sSL -H \"Authorization: Bearer ${GITHUB_TOKEN}\" -o koaai \"${KOAAI_DOWNLOAD_URL}\"\n    else\n        curl -sSL -o koaai \"${KOAAI_DOWNLOAD_URL}\"\n    fi\nelse\n    echo \"KOAAI_DOWNLOAD_URL empty - using an already-uploaded binary\"\nfi\nchmod +x koaai\nfile koaai\n\necho \"installation complete\"",
-      "container": "ghcr.io/parkervcp/installers:debian",
-      "entrypoint": "bash"
-    }
-  },
-  "variables": [
-    {
-      "name": "Binary download URL",
-      "description": "Direct URL of the koaai binary. Leave EMPTY if you upload the binary yourself via SFTP/panel.",
-      "env_variable": "KOAAI_DOWNLOAD_URL",
-      "default_value": "",
-      "user_viewable": true,
-      "user_editable": true,
-      "rules": [
-        "nullable",
-        "string"
-      ]
+    "exported_at": "2026-08-26T03:00:00+00:00",
+    "name": "Koaai",
+    "author": "kurenai@koaai.dev",
+    "description": "Koaai - single-process Rust Discord music bot. Downloads the prebuilt koaai binary (or uses one you upload), installs yt-dlp nightly and Node.js. Nothing is compiled on the host.",
+    "features": null,
+    "docker_images": {
+        "ghcr.io\/ptero-eggs\/yolks:debian_bookworm": "ghcr.io\/ptero-eggs\/yolks:debian_bookworm"
     },
-    {
-      "name": "GitHub token",
-      "description": "Personal access token \u2014 REQUIRED if the repo/release is private",
-      "env_variable": "GITHUB_TOKEN",
-      "default_value": "",
-      "user_viewable": true,
-      "user_editable": true,
-      "rules": [
-        "nullable",
-        "string"
-      ]
+    "file_denylist": [],
+    "startup": "if [ -d bin ]; then export PATH=\"$(pwd)\/bin:$PATH\"; fi; if [ ! -f .env ] && [ -n \"$TOKEN\" ]; then printf 'TOKEN=%s\\n' \"$TOKEN\" > .env; fi; exec .\/koaai",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": [\r\n        \"ready as\"\r\n    ]\r\n}",
+        "logs": "{}",
+        "stop": "^C"
     },
-    {
-      "name": "Bot token",
-      "description": "Discord bot token",
-      "env_variable": "TOKEN",
-      "default_value": "",
-      "user_viewable": false,
-      "user_editable": true,
-      "rules": [
-        "required",
-        "string"
-      ]
+    "scripts": {
+        "installation": {
+            "script": "#!\/bin\/bash\r\n# Koaai installation script\r\n#\r\n# Server Files: \/mnt\/server\r\napt update\r\napt install -y ca-certificates curl xz-utils python3-minimal python3-pip file\r\n\r\nmkdir -p \/mnt\/server\/bin\r\ncd \/mnt\/server\r\n\r\n## yt-dlp (nightly channel - the bot refuses ancient versions)\npython3 -m pip install --upgrade --pre yt-dlp \\\r\n    || python3 -m pip install --upgrade --pre yt-dlp --break-system-packages\r\nln -sf \"$(command -v yt-dlp)\" \/usr\/local\/bin\/yt-dlp\r\nyt-dlp --version\r\n\r\n## Node.js runtime (passed to every yt-dlp call via --js-runtimes node)\ncd \/tmp\r\nNODE_VERSION=22.14.0\r\ncurl -sSL -o node.tar.xz \"https:\/\/nodejs.org\/dist\/v${NODE_VERSION}\/node-v${NODE_VERSION}-linux-x64.tar.xz\"\r\ntar -xf node.tar.xz\r\ncp \"node-v${NODE_VERSION}-linux-x64\/bin\/node\" \/mnt\/server\/bin\/node\r\n\/mnt\/server\/bin\/node --version\r\n\r\n## koaai binary - set KOAAI_DOWNLOAD_URL to fetch it, or leave empty and\r\n## upload the binary yourself via SFTP \/ panel file manager (nothing compiles)\ncd \/mnt\/server\r\nif [ -n \"$KOAAI_DOWNLOAD_URL\" ]; then\r\n    if [ -n \"$GITHUB_TOKEN\" ]; then\r\n        curl -sSL -H \"Authorization: Bearer ${GITHUB_TOKEN}\" -o koaai \"${KOAAI_DOWNLOAD_URL}\"\r\n    else\r\n        curl -sSL -o koaai \"${KOAAI_DOWNLOAD_URL}\"\r\n    fi\r\nelse\r\n    echo \"KOAAI_DOWNLOAD_URL empty - using an already-uploaded binary\"\r\nfi\r\nchmod +x koaai\r\nfile koaai\r\n\r\necho -e \"install complete\"\r\nexit 0",
+            "container": "ghcr.io\/ptero-eggs\/installers:debian",
+            "entrypoint": "bash"
+        }
     },
-    {
-      "name": "Owner ID",
-      "description": "Discord user ID of the bot owner (report dashboard access in DMs)",
-      "env_variable": "OWNER_ID",
-      "default_value": "",
-      "user_viewable": true,
-      "user_editable": true,
-      "rules": [
-        "nullable",
-        "string"
-      ]
-    },
-    {
-      "name": "Dev guild ID",
-      "description": "Scope slash-command registration to one guild while testing (leave empty for global)",
-      "env_variable": "DEV_GUILD_ID",
-      "default_value": "",
-      "user_viewable": true,
-      "user_editable": true,
-      "rules": [
-        "nullable",
-        "string"
-      ]
-    },
-    {
-      "name": "Spotify client ID",
-      "description": "Enables Spotify links and spsearch",
-      "env_variable": "SPOTIFY_CLIENT_ID",
-      "default_value": "",
-      "user_viewable": true,
-      "user_editable": true,
-      "rules": [
-        "nullable",
-        "string"
-      ]
-    },
-    {
-      "name": "Spotify client secret",
-      "description": "Spotify OAuth secret",
-      "env_variable": "SPOTIFY_CLIENT_SECRET",
-      "default_value": "",
-      "user_viewable": false,
-      "user_editable": true,
-      "rules": [
-        "nullable",
-        "string"
-      ]
-    }
-  ]
+    "variables": [
+        {
+            "name": "Binary download URL",
+            "description": "Direct URL of the prebuilt koaai binary.\r\nLeave EMPTY to upload the binary yourself via SFTP or the panel file manager.",
+            "env_variable": "KOAAI_DOWNLOAD_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "GitHub token",
+            "description": "Personal access token - required only when downloading from a private repo/release.",
+            "env_variable": "GITHUB_TOKEN",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Bot Token",
+            "description": "Discord bot token.",
+            "env_variable": "TOKEN",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Owner ID",
+            "description": "Your Discord user ID - unlocks the report dashboard in DMs.",
+            "env_variable": "OWNER_ID",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Dev Guild ID",
+            "description": "Scope slash-command registration to one guild while testing. Leave empty for global registration.",
+            "env_variable": "DEV_GUILD_ID",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Spotify Client ID",
+            "description": "Enables Spotify links and spsearch.",
+            "env_variable": "SPOTIFY_CLIENT_ID",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Spotify Client Secret",
+            "description": "Spotify OAuth secret.",
+            "env_variable": "SPOTIFY_CLIENT_SECRET",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        }
+    ]
 }
