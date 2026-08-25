@@ -29,26 +29,6 @@
     },
     "variables": [
         {
-            "name": "Binary download URL",
-            "description": "Direct URL of the prebuilt koaai binary.\r\nLeave EMPTY to upload the binary yourself via SFTP or the panel file manager.",
-            "env_variable": "KOAAI_DOWNLOAD_URL",
-            "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "nullable|string",
-            "field_type": "text"
-        },
-        {
-            "name": "GitHub token",
-            "description": "Personal access token - required only when downloading from a private repo/release.",
-            "env_variable": "GITHUB_TOKEN",
-            "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "nullable|string",
-            "field_type": "text"
-        },
-        {
             "name": "Bot Token",
             "description": "Discord bot token.",
             "env_variable": "TOKEN",
