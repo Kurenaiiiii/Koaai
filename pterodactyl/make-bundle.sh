@@ -10,12 +10,9 @@ REPO="Kurenaiiiii/Koaai"
 OUT="koaai-bundle"
 
 echo "── pulling latest CI binary ──"
-rm -rf "$OUT"
+rm -rf "$OUT" koaai-bundle.tar.gz
 mkdir -p "$OUT/bin"
 gh run download --repo "$REPO" -n koaai-linux-x64 -D "$OUT"
-mv "$OUT/koaai" "$OUT/koaai.tmp" 2>/dev/null || true
-find "$OUT" -maxdepth 1 -type f ! -name 'koaai*' -delete 2>/dev/null || true
-ls "$OUT"
 
 echo "── fetching yt-dlp nightly ──"
 curl -sSL --retry 3 -o "$OUT/bin/yt-dlp" \
