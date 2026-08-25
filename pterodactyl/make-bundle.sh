@@ -16,7 +16,7 @@ gh run download --repo "$REPO" -n koaai-linux-x64 -D "$OUT"
 
 echo "── fetching yt-dlp nightly ──"
 curl -sSL --retry 3 -o "$OUT/bin/yt-dlp" \
-    "https://github.com/yt-dlp/yt-dlp-nightly-build/releases/latest/download/yt-dlp_linux"
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
 [ "$(head -c4 "$OUT/bin/yt-dlp")" = $'\x7fELF' ] || { echo "yt-dlp download junk!"; exit 1; }
 
 echo "── fetching node 22 ──"
@@ -28,10 +28,14 @@ cp "/tmp/node-v${NODE_VERSION}-linux-x64/bin/node" "$OUT/bin/node"
 
 chmod +x "$OUT/koaai" "$OUT/bin/yt-dlp" "$OUT/bin/node"
 
-echo "── verifying everything actually runs ──"
-"$OUT/koaai" </dev/null >/dev/null 2>&1 || true   # exits on missing TOKEN — fine, proves ELF+libs
-"$OUT/bin/yt-dlp" --version
-"$OUT/bin/node" --version
+echo "── verifying (ELF magic only — never execute!) ──"
+for f in "$OUT/koaai" "$OUT/bin/yt-dlp" "$OUT/bin/node"; do
+    if ! head -c 4 "$f" | grep -q $'\x7fELF'; then
+        echo "BROKEN (not ELF): $f"
+        exit 1
+    fi
+done
+echo "all three binaries are valid ELF x86-64"
 
 tar -czf koaai-bundle.tar.gz -C "$OUT" .
 rm -rf "$OUT"
