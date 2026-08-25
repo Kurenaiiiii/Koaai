@@ -513,7 +513,7 @@ pub mod router {
                 }
 
                 if core.stay_channel(guild_id).await.is_some() {
-                    ephemeral(core, interaction, format!("{}  Stopped. (24/7 active)", config::emojis::STOP)).await;
+                    ephemeral(core, interaction, "Stopped. (24/7 active)".to_string()).await;
                 } else {
                     let _ = core.voice.remove(guild_id).await;
                     {
@@ -526,7 +526,7 @@ pub mod router {
                             t.abort();
                         }
                     }
-                    ephemeral(core, interaction, format!("{}  Stopped and left.", config::emojis::STOP)).await;
+                    ephemeral(core, interaction, "Stopped and left.".to_string()).await;
                 }
             }
             _ => {}

@@ -78,6 +78,12 @@ impl serenity::EventHandler for Handler {
                     data_about_bot.user.name,
                     data_about_bot.user.id
                 );
+                // Idle + "Listening to +help | For Help" — re-asserted on every
+                // Ready so reconnects never leave the bot stuck Online.
+                ctx.set_presence(
+                    Some(serenity::gateway::ActivityData::listening("+help | For Help")),
+                    serenity::model::user::OnlineStatus::Idle,
+                );
                 if !self.registered.swap(
                     true,
                     std::sync::atomic::Ordering::SeqCst,
@@ -305,6 +311,11 @@ async fn main() {
         },
         on_error: |error| {
             Box::pin(async move {
+                // Users chatting with the prefix on ("- kabhi kabhi") are not
+                // errors — ignore unknown commands silently like the old bot.
+                if matches!(error, poise::FrameworkError::UnknownCommand { .. }) {
+                    return;
+                }
                 log_error!("commands", "{error:?}");
             })
         },

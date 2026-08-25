@@ -4,14 +4,26 @@ use std::time::Duration;
 use crate::config;
 use crate::player;
 use crate::state::{LoopMode, Track};
-use crate::{sources, Context, Error, Data};
+use crate::{sources, Context, Error};
 
 fn emoji_err(msg: &str) -> String {
     format!("{}  {msg}", config::emojis::ERROR)
 }
 
+/// Containers already paint a status emoji; messages that start with their
+/// own action emoji would render two in a row. Strip the leading one.
+fn dedup_emoji(msg: &str) -> &str {
+    let t = msg.trim_start();
+    if t.starts_with('<')
+        && let Some((_, rest)) = t.split_once('>')
+    {
+        return rest.trim_start();
+    }
+    msg
+}
+
 async fn ok(ctx: Context<'_>, msg: &str) -> Result<(), Error> {
-    let comps = crate::ui::success_container(msg);
+    let comps = crate::ui::success_container(dedup_emoji(msg));
     ctx.send(
         poise::CreateReply::default()
             .flags(crate::ui::CV2_EPHEMERAL)
@@ -22,7 +34,7 @@ async fn ok(ctx: Context<'_>, msg: &str) -> Result<(), Error> {
 }
 
 async fn err(ctx: Context<'_>, msg: &str) -> Result<(), Error> {
-    let comps = crate::ui::error_container(msg);
+    let comps = crate::ui::error_container(dedup_emoji(msg));
     ctx.send(
         poise::CreateReply::default()
             .flags(crate::ui::CV2_EPHEMERAL)
@@ -111,7 +123,7 @@ pub async fn play(
             "Tip: paste a YouTube / Spotify / SoundCloud link, or use `ytsearch:` `spsearch:` `scsearch:` prefixes."
         }
     ));
-    let status = ctx
+    let _status = ctx
         .send(poise::CreateReply::default().flags(crate::ui::CV2_FLAGS).components(loading))
         .await?;
 
@@ -130,7 +142,6 @@ pub async fn play(
                     "## 📋 Playlist Queued\n**Tracks:** {count} • **Queued by:** <@{}>\n-# Tracks start playing automatically — type `+queue` to browse what's coming.",
                     ctx.author().id
                 ));
-                status.delete::<Data, Error>(ctx).await.ok();
                 ctx.send(
                     poise::CreateReply::default()
                         .flags(crate::ui::CV2_FLAGS)
@@ -171,7 +182,6 @@ pub async fn play(
                     )
                 };
                 let comps = crate::ui::info_container(body);
-                status.delete::<Data, Error>(ctx).await.ok();
                 ctx.send(
                     poise::CreateReply::default()
                         .flags(crate::ui::CV2_FLAGS)

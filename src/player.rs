@@ -28,8 +28,8 @@ async fn say_to(
     core: &Core,
     channel: ChannelId,
     text: String,
-    accent: u32,
 ) -> Option<serenity::model::channel::Message> {
+    // Deliberately NO accent colour — plain notification bubble.
     let comps: Vec<serenity::builder::CreateComponent<'static>> =
         vec![serenity::builder::CreateComponent::Container(
             serenity::builder::CreateContainer::new(vec![
@@ -37,7 +37,6 @@ async fn say_to(
                     serenity::builder::CreateTextDisplay::new(text).into_owned(),
                 ),
             ])
-            .accent_colour(serenity::model::colour::Colour::new(accent))
             .into_owned(),
         )];
     match serenity::all::GenericChannelId::new(channel.get())
@@ -56,13 +55,7 @@ async fn say_to(
     }
 }
 
-async fn say_main(core: &Core, channel: ChannelId, text: String) -> Option<serenity::model::channel::Message> {
-    say_to(core, channel, text, crate::config::C_MAIN).await
-}
 
-async fn say_warn(core: &Core, channel: ChannelId, text: String) -> Option<serenity::model::channel::Message> {
-    say_to(core, channel, text, crate::config::C_WARN).await
-}
 
 pub struct GuildTrackEvents {
     pub core: Arc<Core>,
@@ -114,7 +107,7 @@ impl VoiceEventHandler for GuildTrackEvents {
                     let home2 = st.home_channel;
                     drop(st);
                     if let Some(home2) = home2 {
-                        say_main(
+                        say_to(
                             &self.core,
                             home2,
                             format!(
@@ -140,7 +133,7 @@ impl VoiceEventHandler for GuildTrackEvents {
 
                     warn!(guild = %self.guild_id, "attempting voice rejoin recovery");
                     if let Some(home2) = home2 {
-                        say_warn(
+                        say_to(
                             &self.core,
                             home2,
                             format!(
@@ -184,7 +177,7 @@ impl VoiceEventHandler for GuildTrackEvents {
                                 st.voice_channel_id = None;
                                 drop(st);
                                 if let Some(home2) = home {
-                                    say_warn(
+                                    say_to(
                                         &self.core,
                                         home2,
                                         format!(
@@ -201,7 +194,7 @@ impl VoiceEventHandler for GuildTrackEvents {
                 }
 
                 if let Some(home) = home {
-                    say_warn(
+                    say_to(
                         &self.core,
                         home,
                         format!(
@@ -359,7 +352,7 @@ pub fn schedule_auto_leave(core: &Arc<Core>, guild_id: GuildId) {    let mut st 
 
         let prefix = core2.prefix(Some(guild_id)).await;
         if let Some(home) = home {
-            say_main(
+            say_to(
                 &core2,
                 home,
                 format!(
@@ -410,7 +403,7 @@ pub async fn schedule_stay_return(core: &Arc<Core>, guild_id: GuildId) {
                 core2.registry.get(guild_id).voice_channel_id = Some(target);
                 attach_track_events(&call, &core2, guild_id).await;
                 if let Some(home) = home {
-                    say_main(
+                    say_to(
                         &core2,
                         home,
                         format!(
@@ -474,7 +467,7 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
             clear_channel_status(&core, guild_id).await;
             let prefix = core.prefix(Some(guild_id)).await;
             if let Some(home) = home {
-                say_main(
+                say_to(
                     &core,
                     home,
                     format!(
@@ -530,8 +523,6 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
         drop(st);
     }
 
-    set_channel_status(&core, guild_id, &track).await;
-
     let handle = {
         let mut guard = call.lock().await;
         guard.play_input(input.into())
@@ -547,6 +538,10 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
         st.current_is_cached = false;
         st.current_handle = Some(handle.clone());
     }
+
+    // Status + NP card AFTER the stream is rolling so the mixer never
+    // competes with HTTP work in its first critical 20ms frames.
+    set_channel_status(&core, guild_id, &track).await;
 
     if let Some(home) = home {
         let st_view = core.registry.get(guild_id);
