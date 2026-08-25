@@ -73,7 +73,7 @@ process to babysit, no version drift between bot and node — just
 ### Run it
 
 ```bash
-git clone <your-fork> && cd NewBot
+git clone https://github.com/Kurenaiiiii/Koaai.git && cd Koaai
 cp .env.example .env        # then fill TOKEN in
 cargo run --release
 ```
