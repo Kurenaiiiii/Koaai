@@ -8,3 +8,4 @@ bot.db
 # local bundle build artifacts
 pterodactyl/koaai-bundle/
 *.tar.gz
+pterodactyl/koaai-bundle/
