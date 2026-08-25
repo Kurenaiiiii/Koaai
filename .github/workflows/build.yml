@@ -9,8 +9,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Compile & Test
+  binary:
+    name: Release binary
     # 22.04 on purpose: keeps the binary's glibc requirement low enough for
     # Debian-bookworm-based Pterodactyl images (yolks). Don't bump casually.
     runs-on: ubuntu-22.04
@@ -23,15 +23,11 @@ jobs:
 
       - name: Cache cargo build & registry
         uses: Swatinem/rust-cache@v2
-
-      - name: Install system dependencies (cmake for the Opus FFI)
-        run: sudo apt-get update && sudo apt-get install -y cmake
+        with:
+          workspaces: koaai-release
 
       - name: Build release binary
         run: cargo build --release
-
-      - name: Run tests
-        run: cargo test --release
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
@@ -39,3 +35,19 @@ jobs:
           name: koaai-linux-x64
           path: target/release/koaai
           if-no-files-found: error
+
+  test:
+    name: Tests (debug — much faster than release)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build & registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test
