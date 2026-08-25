@@ -1,5 +1,5 @@
 {
-  "_comment": "Koaai — single-process Rust Discord music bot. Requires the release binary URL; see pterodactyl/README.md",
+  "_comment": "Koaai \u2014 single-process Rust Discord music bot. Requires the release binary URL; see pterodactyl/README.md",
   "meta": {
     "version": "PTDL_v2",
     "update_url": null
@@ -28,7 +28,7 @@
   },
   "scripts": {
     "installation": {
-      "script": "#!/bin/bash\nset -ex\n\napt-get update\napt-get install -y --no-install-recommends ca-certificates curl xz-utils python3-minimal python3-pip\n\n# yt-dlp — project requires a recent build; prefer prereleases (nightly channel)\npython3 -m pip install --upgrade --pre yt-dlp \\\n  || python3 -m pip install --upgrade --pre yt-dlp --break-system-packages\nln -sf \"$(command -v yt-dlp)\" /usr/local/bin/yt-dlp\nyt-dlp --version\n\n# Node.js runtime (passed to every yt-dlp call via --js-runtimes node)\nmkdir -p /mnt/server/bin\ncd /tmp\nNODE_VERSION=22.14.0\ncurl -sSL -o node.tar.xz \"https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz\"\ntar -xf node.tar.xz\ncp \"node-v${NODE_VERSION}-linux-x64/bin/node\" /mnt/server/bin/node\n/mnt/server/bin/node --version\n\n# koaai binary\ncd /mnt/server\nif [ -n \"$GITHUB_TOKEN\" ]; then\n    curl -sSL -H \"Authorization: Bearer ${GITHUB_TOKEN}\" -o koaai \"${KOAAI_DOWNLOAD_URL}\"\nelse\n    curl -sSL -o koaai \"${KOAAI_DOWNLOAD_URL}\"\nfi\nchmod +x koaai\nfile koaai\n\necho \"installation complete\"",
+      "script": "#!/bin/bash\nset -ex\n\napt-get update\napt-get install -y --no-install-recommends ca-certificates curl xz-utils python3-minimal python3-pip\n\n# yt-dlp \u2014 project requires a recent build; prefer prereleases (nightly channel)\npython3 -m pip install --upgrade --pre yt-dlp \\\n  || python3 -m pip install --upgrade --pre yt-dlp --break-system-packages\nln -sf \"$(command -v yt-dlp)\" /usr/local/bin/yt-dlp\nyt-dlp --version\n\n# Node.js runtime (passed to every yt-dlp call via --js-runtimes node)\nmkdir -p /mnt/server/bin\ncd /tmp\nNODE_VERSION=22.14.0\ncurl -sSL -o node.tar.xz \"https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz\"\ntar -xf node.tar.xz\ncp \"node-v${NODE_VERSION}-linux-x64/bin/node\" /mnt/server/bin/node\n/mnt/server/bin/node --version\n\n# koaai binary \u2014 set KOAAI_DOWNLOAD_URL to fetch it, or leave empty and\n# upload the binary yourself via SFTP / panel file manager (nothing compiles)\ncd /mnt/server\nif [ -n \"$KOAAI_DOWNLOAD_URL\" ]; then\n    if [ -n \"$GITHUB_TOKEN\" ]; then\n        curl -sSL -H \"Authorization: Bearer ${GITHUB_TOKEN}\" -o koaai \"${KOAAI_DOWNLOAD_URL}\"\n    else\n        curl -sSL -o koaai \"${KOAAI_DOWNLOAD_URL}\"\n    fi\nelse\n    echo \"KOAAI_DOWNLOAD_URL empty - using an already-uploaded binary\"\nfi\nchmod +x koaai\nfile koaai\n\necho \"installation complete\"",
       "container": "ghcr.io/parkervcp/installers:debian",
       "entrypoint": "bash"
     }
@@ -36,21 +36,27 @@
   "variables": [
     {
       "name": "Binary download URL",
-      "description": "Direct URL of the koaai binary from GitHub Actions artifacts or a GitHub Release asset",
+      "description": "Direct URL of the koaai binary. Leave EMPTY if you upload the binary yourself via SFTP/panel.",
       "env_variable": "KOAAI_DOWNLOAD_URL",
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": ["required", "string", "url"]
+      "rules": [
+        "nullable",
+        "string"
+      ]
     },
     {
       "name": "GitHub token",
-      "description": "Personal access token — REQUIRED if the repo/release is private",
+      "description": "Personal access token \u2014 REQUIRED if the repo/release is private",
       "env_variable": "GITHUB_TOKEN",
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": ["nullable", "string"]
+      "rules": [
+        "nullable",
+        "string"
+      ]
     },
     {
       "name": "Bot token",
@@ -59,7 +65,10 @@
       "default_value": "",
       "user_viewable": false,
       "user_editable": true,
-      "rules": ["required", "string"]
+      "rules": [
+        "required",
+        "string"
+      ]
     },
     {
       "name": "Owner ID",
@@ -68,7 +77,10 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": ["nullable", "string"]
+      "rules": [
+        "nullable",
+        "string"
+      ]
     },
     {
       "name": "Dev guild ID",
@@ -77,7 +89,10 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": ["nullable", "string"]
+      "rules": [
+        "nullable",
+        "string"
+      ]
     },
     {
       "name": "Spotify client ID",
@@ -86,7 +101,10 @@
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": ["nullable", "string"]
+      "rules": [
+        "nullable",
+        "string"
+      ]
     },
     {
       "name": "Spotify client secret",
@@ -95,7 +113,10 @@
       "default_value": "",
       "user_viewable": false,
       "user_editable": true,
-      "rules": ["nullable", "string"]
+      "rules": [
+        "nullable",
+        "string"
+      ]
     }
   ]
 }
