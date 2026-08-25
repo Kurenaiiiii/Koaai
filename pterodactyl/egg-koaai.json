@@ -10,10 +10,10 @@
     "description": "Koaai - single-process Rust Discord music bot. Downloads the prebuilt koaai binary (or uses one you upload), installs yt-dlp nightly and Node.js. Nothing is compiled on the host.",
     "features": null,
     "docker_images": {
-        "ghcr.io\/ptero-eggs\/yolks:debian_bookworm": "ghcr.io\/ptero-eggs\/yolks:debian_bookworm"
+        "ghcr.io/ptero-eggs/yolks:debian_bookworm": "ghcr.io/ptero-eggs/yolks:debian_bookworm"
     },
     "file_denylist": [],
-    "startup": "if [ -d bin ]; then export PATH=\"$(pwd)\/bin:$PATH\"; fi; if [ ! -f .env ] && [ -n \"$TOKEN\" ]; then printf 'TOKEN=%s\\n' \"$TOKEN\" > .env; fi; exec .\/koaai",
+    "startup": "if [ -d bin ]; then export PATH=\"$(pwd)/bin:$PATH\"; fi; if [ ! -f .env ] && [ -n \"$TOKEN\" ]; then printf 'TOKEN=%s\\n' \"$TOKEN\" > .env; fi; exec ./koaai",
     "config": {
         "files": "{}",
         "startup": "{\r\n    \"done\": [\r\n        \"ready as\"\r\n    ]\r\n}",
@@ -22,8 +22,8 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!\/bin\/bash\r\n# Koaai installation script\r\n#\r\n# Server Files: \/mnt\/server\r\napt update\r\napt install -y ca-certificates curl xz-utils python3-minimal python3-pip file\r\n\r\nmkdir -p \/mnt\/server\/bin\r\ncd \/mnt\/server\r\n\r\n## yt-dlp (nightly channel - the bot refuses ancient versions)\npython3 -m pip install --upgrade --pre yt-dlp \\\r\n    || python3 -m pip install --upgrade --pre yt-dlp --break-system-packages\r\nln -sf \"$(command -v yt-dlp)\" \/usr\/local\/bin\/yt-dlp\r\nyt-dlp --version\r\n\r\n## Node.js runtime (passed to every yt-dlp call via --js-runtimes node)\ncd \/tmp\r\nNODE_VERSION=22.14.0\r\ncurl -sSL -o node.tar.xz \"https:\/\/nodejs.org\/dist\/v${NODE_VERSION}\/node-v${NODE_VERSION}-linux-x64.tar.xz\"\r\ntar -xf node.tar.xz\r\ncp \"node-v${NODE_VERSION}-linux-x64\/bin\/node\" \/mnt\/server\/bin\/node\r\n\/mnt\/server\/bin\/node --version\r\n\r\n## koaai binary - set KOAAI_DOWNLOAD_URL to fetch it, or leave empty and\r\n## upload the binary yourself via SFTP \/ panel file manager (nothing compiles)\ncd \/mnt\/server\r\nif [ -n \"$KOAAI_DOWNLOAD_URL\" ]; then\r\n    if [ -n \"$GITHUB_TOKEN\" ]; then\r\n        curl -sSL -H \"Authorization: Bearer ${GITHUB_TOKEN}\" -o koaai \"${KOAAI_DOWNLOAD_URL}\"\r\n    else\r\n        curl -sSL -o koaai \"${KOAAI_DOWNLOAD_URL}\"\r\n    fi\r\nelse\r\n    echo \"KOAAI_DOWNLOAD_URL empty - using an already-uploaded binary\"\r\nfi\r\nchmod +x koaai\r\nfile koaai\r\n\r\necho -e \"install complete\"\r\nexit 0",
-            "container": "ghcr.io\/ptero-eggs\/installers:debian",
+            "script": "#!/bin/bash\r\n# Koaai installation script\r\n#\r\n# Server Files: /mnt/server\r\n# NOTE: only files under /mnt/server survive into the runtime container!\r\napt update\r\napt install -y ca-certificates curl xz-utils file\r\n\r\nmkdir -p /mnt/server/bin\r\ncd /tmp\r\n\r\n## yt-dlp standalone linux build (nightly channel) -> lives in /mnt/server/bin\r\n## so it persists into the runtime container. No system python/pip involved.\r\ncurl -sSL -o /mnt/server/bin/yt-dlp \\\r\n    \"https://github.com/yt-dlp/yt-dlp-nightly-build/releases/latest/download/yt-dlp_linux\"\r\nchmod +x /mnt/server/bin/yt-dlp\r\n/mnt/server/bin/yt-dlp --version\r\n\r\n## Node.js runtime (passed to every yt-dlp call via --js-runtimes node)\r\nNODE_VERSION=22.14.0\r\ncurl -sSL -o node.tar.xz \"https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz\"\r\ntar -xf node.tar.xz\r\ncp \"node-v${NODE_VERSION}-linux-x64/bin/node\" /mnt/server/bin/node\r\n/mnt/server/bin/node --version\r\n\r\n## koaai binary - set KOAAI_DOWNLOAD_URL to fetch it, or leave empty and\r\n## upload the binary yourself via SFTP / panel file manager (nothing compiles)\r\ncd /mnt/server\r\nif [ -n \"$KOAAI_DOWNLOAD_URL\" ]; then\r\n    if [ -n \"$GITHUB_TOKEN\" ]; then\r\n        curl -sSL -H \"Authorization: Bearer ${GITHUB_TOKEN}\" -o koaai \"${KOAAI_DOWNLOAD_URL}\"\r\n    else\r\n        curl -sSL -o koaai \"${KOAAI_DOWNLOAD_URL}\"\r\n    fi\r\nelse\r\n    echo \"KOAAI_DOWNLOAD_URL empty - using an already-uploaded binary\"\r\nfi\r\nchmod +x koaai\r\nfile koaai\r\n\r\necho -e \"install complete\"\r\nexit 0",
+            "container": "ghcr.io/ptero-eggs/installers:debian",
             "entrypoint": "bash"
         }
     },
