@@ -4,3 +4,7 @@ Changelog.md
 bot.db
 *.db-wal
 *.db-shm
+
+# local bundle build artifacts
+pterodactyl/koaai-bundle/
+*.tar.gz
