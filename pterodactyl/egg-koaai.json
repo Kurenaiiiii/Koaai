@@ -1,0 +1,101 @@
+{
+  "_comment": "Koaai — single-process Rust Discord music bot. Requires the release binary URL; see pterodactyl/README.md",
+  "meta": {
+    "version": "PTDL_v2",
+    "update_url": null
+  },
+  "exported_at": "2026-08-26T00:00:00+00:00",
+  "name": "Koaai (Rust music bot)",
+  "author": "kurenai@koaai.dev",
+  "description": "Single-process Discord music bot written in Rust. Downloads the koaai binary, installs yt-dlp nightly and Node.js, then runs the bot with graceful SIGINT shutdown.",
+  "features": null,
+  "docker_images": {
+    "Debian Bookworm": "ghcr.io/parkervcp/yolks:debian_bookworm"
+  },
+  "file_denylist": [],
+  "startup": {
+    "done": "ready as",
+    "user_interaction": [],
+    "command": "./koaai"
+  },
+  "config": {
+    "files": {},
+    "startup": {
+      "done": "ready as"
+    },
+    "logs": {},
+    "stop": "^C"
+  },
+  "scripts": {
+    "installation": {
+      "script": "#!/bin/bash\nset -ex\n\napt-get update\napt-get install -y --no-install-recommends ca-certificates curl xz-utils python3-minimal python3-pip\n\n# yt-dlp — project requires a recent build; prefer prereleases (nightly channel)\npython3 -m pip install --upgrade --pre yt-dlp \\\n  || python3 -m pip install --upgrade --pre yt-dlp --break-system-packages\nln -sf \"$(command -v yt-dlp)\" /usr/local/bin/yt-dlp\nyt-dlp --version\n\n# Node.js runtime (passed to every yt-dlp call via --js-runtimes node)\nmkdir -p /mnt/server/bin\ncd /tmp\nNODE_VERSION=22.14.0\ncurl -sSL -o node.tar.xz \"https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz\"\ntar -xf node.tar.xz\ncp \"node-v${NODE_VERSION}-linux-x64/bin/node\" /mnt/server/bin/node\n/mnt/server/bin/node --version\n\n# koaai binary\ncd /mnt/server\nif [ -n \"$GITHUB_TOKEN\" ]; then\n    curl -sSL -H \"Authorization: Bearer ${GITHUB_TOKEN}\" -o koaai \"${KOAAI_DOWNLOAD_URL}\"\nelse\n    curl -sSL -o koaai \"${KOAAI_DOWNLOAD_URL}\"\nfi\nchmod +x koaai\nfile koaai\n\necho \"installation complete\"",
+      "container": "ghcr.io/parkervcp/installers:debian",
+      "entrypoint": "bash"
+    }
+  },
+  "variables": [
+    {
+      "name": "Binary download URL",
+      "description": "Direct URL of the koaai binary from GitHub Actions artifacts or a GitHub Release asset",
+      "env_variable": "KOAAI_DOWNLOAD_URL",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": ["required", "string", "url"]
+    },
+    {
+      "name": "GitHub token",
+      "description": "Personal access token — REQUIRED if the repo/release is private",
+      "env_variable": "GITHUB_TOKEN",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": ["nullable", "string"]
+    },
+    {
+      "name": "Bot token",
+      "description": "Discord bot token",
+      "env_variable": "TOKEN",
+      "default_value": "",
+      "user_viewable": false,
+      "user_editable": true,
+      "rules": ["required", "string"]
+    },
+    {
+      "name": "Owner ID",
+      "description": "Discord user ID of the bot owner (report dashboard access in DMs)",
+      "env_variable": "OWNER_ID",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": ["nullable", "string"]
+    },
+    {
+      "name": "Dev guild ID",
+      "description": "Scope slash-command registration to one guild while testing (leave empty for global)",
+      "env_variable": "DEV_GUILD_ID",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": ["nullable", "string"]
+    },
+    {
+      "name": "Spotify client ID",
+      "description": "Enables Spotify links and spsearch",
+      "env_variable": "SPOTIFY_CLIENT_ID",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": ["nullable", "string"]
+    },
+    {
+      "name": "Spotify client secret",
+      "description": "Spotify OAuth secret",
+      "env_variable": "SPOTIFY_CLIENT_SECRET",
+      "default_value": "",
+      "user_viewable": false,
+      "user_editable": true,
+      "rules": ["nullable", "string"]
+    }
+  ]
+}

@@ -9,6 +9,7 @@
 ![Build](./actions/workflows/build.yml/badge.svg)
 ![Rust](https://img.shields.io/badge/Rust-stable-DEA584?logo=rust)
 ![Discord](https://img.shields.io/badge/Components%20V2-ready-5865F2?logo=discord)
+![Pterodactyl](https://img.shields.io/badge/Pterodactyl-egg%20included-E7B93C?logo=pterodactyl)
 
 </div>
 
@@ -60,6 +61,13 @@ process to babysit, no version drift between bot and node — just
   SIGTERM shutdown and zero-warning clippy
 
 ## 🚀 Getting started
+
+### Deploying
+
+Pterodactyl-ready: import [`pterodactyl/egg-koaai.json`](./pterodactyl/egg-koaai.json)
+as an egg — the install script sets up yt-dlp nightly + Node automatically
+and pulls your CI-built binary. Full guide in
+[`pterodactyl/README.md`](./pterodactyl/README.md).
 
 ### Requirements
 
@@ -156,6 +164,7 @@ src/
 
 - [`cupcake-rs-prd.md`](./cupcake-rs-prd.md) — original rewrite PRD
 - [`contanerv2.md`](./contanerv2.md) — Discord Components V2 guide for serenity
+- [`pterodactyl/README.md`](./pterodactyl/README.md) — Pterodactyl deployment guide
 - [`Changelog.md`](./Changelog.md) — full development history *(kept local, gitignored)*
 
 ---
