@@ -304,8 +304,10 @@ async fn main() {
         serenity::GatewayIntents::non_privileged() | serenity::GatewayIntents::MESSAGE_CONTENT;
 
     let mut fopts = poise::FrameworkOptions::<Data, Error> {
+        // NOTE: no static `prefix` here — dynamic_prefix alone decides
+        // (guild prefix when set, otherwise the default). A static fallback
+        // would let BOTH prefixes work after /setprefix.
         prefix_options: poise::PrefixFrameworkOptions {
-            prefix: Some(core.default_prefix_cfg().into()),
             dynamic_prefix: Some(dynamic_prefix),
             ..Default::default()
         },
@@ -313,8 +315,27 @@ async fn main() {
             Box::pin(async move {
                 // Users chatting with the prefix on ("- kabhi kabhi") are not
                 // errors — ignore unknown commands silently like the old bot.
-                if matches!(error, poise::FrameworkError::UnknownCommand { .. }) {
-                    return;
+                match &error {
+                    poise::FrameworkError::UnknownCommand { .. } => {
+                        // Users chatting with the prefix on are not errors.
+                        return;
+                    }
+                    poise::FrameworkError::ArgumentParse { ctx, .. } => {
+                        let comps = crate::ui::error_container(&format!(
+                            "Missing or invalid arguments for `{}`.\n-# Check `/help {}` for usage.",
+                            ctx.command().qualified_name,
+                            ctx.command().qualified_name,
+                        ));
+                        let _ = ctx
+                            .send(
+                                poise::CreateReply::default()
+                                    .flags(crate::ui::CV2_EPHEMERAL)
+                                    .components(comps),
+                            )
+                            .await;
+                        return;
+                    }
+                    _ => {}
                 }
                 log_error!("commands", "{error:?}");
             })
