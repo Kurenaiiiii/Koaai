@@ -8,7 +8,24 @@ use serenity::model::application::ButtonStyle;
 use serenity::model::channel::{MessageFlags, ReactionType};
 
 use crate::config;
-use crate::state::{GuildState, LoopMode, Track};
+use crate::state::{GuildState, LoopMode, SourceTag, Track};
+
+/// Platform badge for the NP header — Apple Music matches ride on YouTube
+/// sources but deserve their own logo.
+fn platform_logo(t: &Track) -> &'static str {
+    if t.ui_link
+        .as_deref()
+        .is_some_and(|u| u.contains("music.apple.com"))
+    {
+        return config::emojis::APPLEMUSIC;
+    }
+    match t.source {
+        SourceTag::Youtube => config::emojis::YOUTUBE,
+        SourceTag::SoundCloud => config::emojis::SOUNDCLOUD,
+        SourceTag::SpotifyMatched => config::emojis::SPOTIFY,
+        SourceTag::Discord | SourceTag::File => config::emojis::FOLDER,
+    }
+}
 
 pub const CV2_FLAGS: MessageFlags = MessageFlags::IS_COMPONENTS_V2;
 pub const CV2_EPHEMERAL: MessageFlags =
@@ -114,7 +131,8 @@ pub fn now_playing_components(guild_id: u64, st: &GuildState, track: &Track) -> 
     );
 
     let desc = format!(
-        "## 🎵 Now Playing\n**[{title_md}]({safe_uri})**\n{ansi}\n✅ **Requested by:** {}\n✅ **Queue:** {} track(s) remaining",
+        "## {} Now Playing\n**[{title_md}]({safe_uri})**\n{ansi}\n✅ **Requested by:** {}\n✅ **Queue:** {} track(s) remaining",
+        platform_logo(track),
         track.requester,
         st.queue.len()
     );
