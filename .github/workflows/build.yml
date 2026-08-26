@@ -20,22 +20,9 @@ jobs:
           - os: ubuntu-22.04
             artifact: koaai-linux-x64
             bin: koaai
-            always: true
-          - os: macos-14
-            artifact: koaai-macos-arm64
-            bin: koaai
-            always: false
-          - os: macos-13
-            artifact: koaai-macos-intel
-            bin: koaai
-            always: false
           - os: windows-latest
             artifact: koaai-windows-x64
             bin: koaai.exe
-            always: false
-    # Linux ships on every push; the expensive runners (macOS bills 10x,
-    # Windows 2x) build only when you manually hit "Run workflow".
-    if: matrix.always || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
