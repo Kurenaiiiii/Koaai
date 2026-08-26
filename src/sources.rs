@@ -253,6 +253,18 @@ pub async fn search_youtube(query: &str) -> Result<ResolvedMeta, String> {
     extract_via_ytdlp(&youtube_search(query)).await
 }
 
+/// Match "artist title" against YouTube Music first (official catalog,
+/// songs-only filter); falls back to plain YouTube search on any issue.
+pub async fn match_on_youtube(query: &str) -> Result<ResolvedMeta, String> {
+    match search_ytmusic(query).await {
+        Ok(m) => Ok(m),
+        Err(e) => {
+            log_sources!("YouTubeMusic", "no result ({e}); falling back to YouTube");
+            search_youtube(query).await
+        }
+    }
+}
+
 // ── YouTube Music search (InnerTube WEB_REMIX, like Nodelink's ytmsearch) ────
 
 pub async fn search_ytmusic(query: &str) -> Result<ResolvedMeta, String> {

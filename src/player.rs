@@ -496,10 +496,30 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
 
     cancel_timers(&mut core.registry.get(guild_id));
 
+    // Spotify-matched entries store a lazy `ytsearch1:artist title` query.
+    // Before playing, upgrade it via YouTube Music (official catalog) with a
+    // plain-YouTube fallback — then the stored uri is rewritten to the exact
+    // watch URL so seeks/restarts never re-match.
+    let mut play_uri = track.uri.clone();
+    if track.source == crate::state::SourceTag::SpotifyMatched
+        && let Some(query) = track.uri.strip_prefix("ytsearch1:")
+    {
+        match crate::sources::match_on_youtube(query).await {
+            Ok(m) => {
+                play_uri = m.webpage_url.clone();
+                if let Some(cur) = core.registry.get(guild_id).current.as_mut() {
+                    cur.uri = play_uri.clone();
+                    cur.ui_link = cur.ui_link.clone().or(Some(m.webpage_url));
+                }
+            }
+            Err(_) => { /* keep the raw ytsearch query — yt-dlp handles it */ }
+        }
+    }
+
     // Probe the stream once for authoritative metadata — resolvers (ytmusic,
     // spotify-match, embed scrape) can return partial or stale info, but this
     // extraction is exactly what will be played.
-    let input = yt_input(&core, track.uri.clone());
+    let input = yt_input(&core, play_uri);
     let mut probe = input.clone();
     if let Ok(aux) = probe.aux_metadata().await {
         let mut st = core.registry.get(guild_id);
