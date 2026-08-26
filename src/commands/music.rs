@@ -452,6 +452,10 @@ async fn perform_seek(
     let guild_id = ctx.guild_id().expect("guild only");
     let core = ctx.data().core.clone();
 
+    // Slash interactions expire after 3 seconds; a first-seek re-buffer can
+    // exceed that, so ack immediately (no-op for prefix invocations).
+    ctx.defer_ephemeral().await?;
+
     let already_cached = core.registry.get(guild_id).current_is_cached;
 
     if already_cached {

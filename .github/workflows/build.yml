@@ -10,20 +10,10 @@ env:
 
 jobs:
   binary:
-    name: Release binary (${{ matrix.artifact }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # 22.04 on purpose: keeps the binary's glibc requirement low enough
-          # for Debian-bookworm-based Pterodactyl images (yolks).
-          - os: ubuntu-22.04
-            artifact: koaai-linux-x64
-            bin: koaai
-          - os: windows-latest
-            artifact: koaai-windows-x64
-            bin: koaai.exe
-    runs-on: ${{ matrix.os }}
+    name: Release binary
+    # 22.04 on purpose: keeps the binary's glibc requirement low enough for
+    # Debian-bookworm-based Pterodactyl images (yolks). Don't bump casually.
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,7 +25,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: koaai-release
-          key: ${{ matrix.artifact }}
 
       - name: Build release binary
         run: cargo build --release
@@ -43,8 +32,8 @@ jobs:
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: target/release/${{ matrix.bin }}
+          name: koaai-linux-x64
+          path: target/release/koaai
           if-no-files-found: error
 
   test:
