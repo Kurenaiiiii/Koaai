@@ -251,6 +251,21 @@ async fn main() {
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
+                // Drop state for guilds that are disconnected AND empty —
+                // keeps long-running RSS flat no matter how many servers
+                // the bot has ever touched.
+                for g in core2.registry.guild_ids() {
+                    let stale = {
+                        let st = core2.registry.get(g);
+                        st.voice_channel_id.is_none()
+                            && st.queue.is_empty()
+                            && st.current.is_none()
+                            && st.current_handle.is_none()
+                    };
+                    if stale {
+                        core2.registry.remove(g);
+                    }
+                }
                 if let Err(e) = core2.db.checkpoint() {
                     log_warn!("db", "hourly checkpoint failed: {e}");
                 }
