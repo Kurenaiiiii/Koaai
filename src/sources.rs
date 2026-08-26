@@ -533,18 +533,39 @@ struct TokenResp {
 static SPOTIFY_TOKEN: LazyLock<Mutex<Option<(String, std::time::Instant, u64)>>> =
     LazyLock::new(|| Mutex::new(None));
 
-/// Reads + sanitises Spotify credentials. Empty/whitespace values count as
-/// MISSING — Pterodactyl-style panels export unset variables as "" and
-/// dotenvy won't override them, which used to yield `Basic ":"` -> HTTP 400.
-fn spotify_creds() -> Option<(String, String)> {
-    let id = std::env::var("SPOTIFY_CLIENT_ID").ok()?;
-    let secret = std::env::var("SPOTIFY_CLIENT_SECRET").ok()?;
-    let id = id.trim();
-    let secret = secret.trim();
-    if id.is_empty() || secret.is_empty() {
-        return None;
+/// Looks up `key` in the process env; if absent or BLANK, parses the local
+/// .env directly. Panels like Pterodactyl export unset variables as "" and
+/// dotenvy won't override existing vars — this sees through that.
+fn cred(key: &str) -> Option<String> {
+    if let Ok(v) = std::env::var(key)
+        && !v.trim().is_empty()
+    {
+        return Some(v.trim().to_string());
     }
-    Some((id.to_string(), secret.to_string()))
+    let content = std::fs::read_to_string(".env").ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=')
+            && k.trim() == key
+        {
+            let v = v.trim().trim_matches('"').trim_matches('\'');
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Reads + sanitises Spotify credentials. Empty/whitespace values count as
+/// MISSING (see [`cred`]).
+fn spotify_creds() -> Option<(String, String)> {
+    let id = cred("SPOTIFY_CLIENT_ID")?;
+    let secret = cred("SPOTIFY_CLIENT_SECRET")?;
+    Some((id, secret))
 }
 
 async fn spotify_token(http: &reqwest::Client) -> Result<String, String> {
