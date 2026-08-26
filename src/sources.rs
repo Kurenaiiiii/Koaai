@@ -533,6 +533,20 @@ struct TokenResp {
 static SPOTIFY_TOKEN: LazyLock<Mutex<Option<(String, std::time::Instant, u64)>>> =
     LazyLock::new(|| Mutex::new(None));
 
+/// Reads + sanitises Spotify credentials. Empty/whitespace values count as
+/// MISSING — Pterodactyl-style panels export unset variables as "" and
+/// dotenvy won't override them, which used to yield `Basic ":"` -> HTTP 400.
+fn spotify_creds() -> Option<(String, String)> {
+    let id = std::env::var("SPOTIFY_CLIENT_ID").ok()?;
+    let secret = std::env::var("SPOTIFY_CLIENT_SECRET").ok()?;
+    let id = id.trim();
+    let secret = secret.trim();
+    if id.is_empty() || secret.is_empty() {
+        return None;
+    }
+    Some((id.to_string(), secret.to_string()))
+}
+
 async fn spotify_token(http: &reqwest::Client) -> Result<String, String> {
     {
         let guard = SPOTIFY_TOKEN.lock().await;
@@ -542,10 +556,7 @@ async fn spotify_token(http: &reqwest::Client) -> Result<String, String> {
             }
     }
 
-    let id = std::env::var("SPOTIFY_CLIENT_ID").map_err(|_| {
-        "Spotify links need SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET in .env (search by song name works without them)".to_string()
-    })?;
-    let secret = std::env::var("SPOTIFY_CLIENT_SECRET").map_err(|_| SPOTIFY_ENV_MSG.to_string())?;
+    let (id, secret) = spotify_creds().ok_or_else(|| SPOTIFY_ENV_MSG.to_string())?;
 
     let resp = http
         .post("https://accounts.spotify.com/api/token")
