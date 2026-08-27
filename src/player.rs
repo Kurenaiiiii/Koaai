@@ -328,7 +328,7 @@ async fn set_channel_status(core: &Core, guild_id: GuildId, track: &Track) {
             )
             .await
         {
-            Ok(()) => {}
+            Ok(_) => {}
             Err(e) => warn!(
                 error = %e,
                 %vc,
