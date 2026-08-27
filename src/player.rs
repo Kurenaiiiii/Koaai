@@ -309,14 +309,32 @@ async fn set_channel_status(core: &Core, guild_id: GuildId, track: &Track) {
     }
     let vc = core.registry.get(guild_id).voice_channel_id;
     if let Some(vc) = vc {
-        let status: String = format!("{} {}", config::emojis::NP, track.title)
-            .chars()
-            .take(490)
-            .collect();
-        let _ = core
+        // "🎧  Now Playing · {title} — {author}" (Discord hard-caps at 500)
+        let mut status = String::new();
+        status.push_str(config::emojis::NP);
+        status.push_str("  Now Playing · ");
+        status.push_str(&track.title);
+        if !track.author.is_empty() && track.author != "Unknown" {
+            status.push_str(" — ");
+            status.push_str(&track.author);
+        }
+        status = status.chars().take(490).collect();
+        match core
             .http_api
-            .edit_channel(serenity::all::GenericChannelId::new(vc.get()), &EditChannel::new().status(status), None)
-            .await;
+            .edit_channel(
+                serenity::all::GenericChannelId::new(vc.get()),
+                &EditChannel::new().status(status),
+                None,
+            )
+            .await
+        {
+            Ok(()) => {}
+            Err(e) => warn!(
+                error = %e,
+                %vc,
+                "voice channel status update failed (bot needs Manage Channels on the VC)"
+            ),
+        }
     }
 }
 
@@ -328,7 +346,11 @@ async fn clear_channel_status(core: &Core, guild_id: GuildId) {
     if let Some(vc) = vc {
         let _ = core
             .http_api
-            .edit_channel(serenity::all::GenericChannelId::new(vc.get()), &EditChannel::new().status(""), None)
+            .edit_channel(
+                serenity::all::GenericChannelId::new(vc.get()),
+                &EditChannel::new().status(""),
+                None,
+            )
             .await;
     }
 }
