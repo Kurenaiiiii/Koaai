@@ -330,14 +330,14 @@ async fn main() {
             Box::pin(async move {
                 // Users chatting with the prefix on ("- kabhi kabhi") are not
                 // errors — ignore unknown commands silently like the old bot.
-                match &error {
+match &error {
                     poise::FrameworkError::UnknownCommand { .. } => {
                         // Users chatting with the prefix on are not errors.
                         return;
                     }
                     poise::FrameworkError::ArgumentParse { ctx, .. } => {
                         let comps = crate::ui::error_container(&format!(
-                            "Missing or invalid arguments for `{}`.\n-# Check `/help {}` for usage.",
+                            "Missing or invalid arguments for `{}`.\\n-# Check `/help {}` for usage.",
                             ctx.command().qualified_name,
                             ctx.command().qualified_name,
                         ));
@@ -348,6 +348,14 @@ async fn main() {
                                     .components(comps),
                             )
                             .await;
+                        return;
+                    }
+                    poise::FrameworkError::Command { ctx, .. } => {
+                        // Expected, user-facing rejections (locked to 24/7,
+                        // not in VC, etc.) are already replied to by the
+                        // command itself — log them quietly, not as errors.
+                        let name = &ctx.command().qualified_name;
+                        log_info!("commands", "{name} returned an error: {error}");
                         return;
                     }
                     _ => {}

@@ -102,9 +102,10 @@ pub async fn play(
         }
     };
 
-    player::ensure_voice(&core, guild_id, user_vc, old_humans)
-        .await
-        .map_or_else(|e| Err(Error::from(e)), |_| Ok(()))?;
+    if let Err(e) = player::ensure_voice(&core, guild_id, user_vc, old_humans).await {
+        // e.g. "I'm locked to 24/7 mode in <#...>" — the user must SEE this.
+        return err(ctx, &e).await;
+    }
 
     core.registry.get(guild_id).home_channel =
         Some(serenity::all::ChannelId::new(ctx.channel_id().get()));

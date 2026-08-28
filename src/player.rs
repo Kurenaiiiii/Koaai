@@ -661,10 +661,23 @@ pub async fn handle_voice_state_update(
                 if let Some(t) = st.stay_return_task.take() {
                     t.abort();
                 }
-            } else if stay.is_some() && !st.playing && st.queue.is_empty() {
-                let core2 = core.clone();
+            } else if stay.is_some() {
+                // Dragged AWAY from the 24/7 channel = 24/7 mode is now OFF.
+                let home = st.home_channel;
+                st.stay_return_task = None;
                 drop(st);
-                schedule_stay_return(&core2, guild_id).await;
+                core.clear_stay_channel(guild_id).await;
+                if let Some(home) = home {
+                    say_to(
+                        core,
+                        home,
+                        format!(
+                            "{}  Dragged out of the 24/7 channel — 24/7 mode disabled. Use `+join` to re-enable it.",
+                            config::emojis::WAVE
+                        ),
+                    )
+                    .await;
+                }
             }
         }
         return;

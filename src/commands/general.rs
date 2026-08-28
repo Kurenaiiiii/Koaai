@@ -89,9 +89,10 @@ pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
         t.abort();
     }
 
-    player::ensure_voice(&core, guild_id, user_vc, false)
-        .await
-        .map_or_else(|e| Err(Error::from(e)), |_| Ok(()))?;
+    if let Err(e) = player::ensure_voice(&core, guild_id, user_vc, false).await {
+        let comps = crate::ui::error_container(&e);
+        return send_cv2_ephemeral(ctx, comps).await;
+    }
 
     core.registry.get(guild_id).home_channel =
         Some(serenity::all::ChannelId::new(ctx.channel_id().get()));
