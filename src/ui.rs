@@ -8,6 +8,7 @@ use serenity::model::application::ButtonStyle;
 use serenity::model::channel::{MessageFlags, ReactionType};
 
 use crate::config;
+use crate::memory;
 use crate::state::{GuildState, LoopMode, SourceTag, Track};
 
 /// Platform badge for the NP header — Apple Music matches ride on YouTube
@@ -450,20 +451,23 @@ pub mod router {
         let core2 = core.clone();
         match action {
             "prev" => {
-                {
+                let handle = {
                     let mut st = core.registry.get(guild_id);
                     if let Some(cur) = st.current.take() {
                         st.queue.push_front(cur);
                     }
                     st.request_stop();
                     st.playing = false;
-                }
+                    st.current_is_cached = false;
+                    st.current_handle.take()
+                };
                 let _ = interaction
                     .create_response(&core.http_api, CreateInteractionResponse::Acknowledge)
                     .await;
-                if let Some(h) = core.registry.get(guild_id).current_handle.take() {
+                if let Some(h) = handle {
                     let _ = h.stop();
                 }
+                memory::trim();
                 tokio::spawn(async move { crate::player::play_next(core2, guild_id).await });
             }
             "pp" => {
@@ -492,18 +496,24 @@ pub mod router {
                 }
             }
             "skip" => {
-                {
+                let handle = {
                     let mut st = core.registry.get(guild_id);
                     st.request_stop();
                     st.playing = false;
                     st.previous = st.current.take();
-                }
+                    st.current_is_cached = false;
+                    if st.queue.is_empty() {
+                        st.queue.shrink_to_fit();
+                    }
+                    st.current_handle.take()
+                };
                 let _ = interaction
                     .create_response(&core.http_api, CreateInteractionResponse::Acknowledge)
                     .await;
-                if let Some(h) = core.registry.get(guild_id).current_handle.take() {
+                if let Some(h) = handle {
                     let _ = h.stop();
                 }
+                memory::trim();
                 tokio::spawn(async move { crate::player::play_next(core2, guild_id).await });
             }
             "loop" => {
@@ -517,18 +527,22 @@ pub mod router {
                 refresh_np(core, guild_id).await;
             }
             "stop" => {
-                {
+                let handle = {
                     let mut st = core.registry.get(guild_id);
                     st.request_stop();
                     st.queue.clear();
+                    st.queue.shrink_to_fit();
                     st.loop_mode = LoopMode::Off;
                     st.playing = false;
                     st.previous = None;
                     st.current = None;
-                }
-                if let Some(h) = core.registry.get(guild_id).current_handle.take() {
+                    st.current_is_cached = false;
+                    st.current_handle.take()
+                };
+                if let Some(h) = handle {
                     let _ = h.stop();
                 }
+                memory::trim();
 
                 if core.stay_channel(guild_id).await.is_some() {
                     ephemeral(core, interaction, "Stopped. (24/7 active)".to_string()).await;
@@ -544,6 +558,7 @@ pub mod router {
                             t.abort();
                         }
                     }
+                    memory::trim();
                     ephemeral(core, interaction, "Stopped and left.".to_string()).await;
                 }
             }

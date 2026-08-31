@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 use crate::core::Core;
 use crate::log_info;
 use crate::log_started;
+use crate::memory;
 use crate::state::{GuildState, LoopMode, Track};
 use crate::config;
 
@@ -101,11 +102,20 @@ impl VoiceEventHandler for GuildTrackEvents {
 
                 if streak >= self.core.cfg.audio.max_consecutive_errors {
                     warn!(guild = %self.guild_id, "too many consecutive failures; stopping");
-                    let mut st = self.core.registry.get(self.guild_id);
-                    st.queue.clear();
-                    st.loop_mode = LoopMode::Off;
-                    let home2 = st.home_channel;
-                    drop(st);
+                    let home2 = {
+                        let mut st = self.core.registry.get(self.guild_id);
+                        clear_queue_and_shrink(&mut st);
+                        drop_handle(&mut st);
+                        st.loop_mode = LoopMode::Off;
+                        st.playing = false;
+                        st.current = None;
+                        st.previous = None;
+                        st.current_is_cached = false;
+                        st.error_streak = 0;
+                        cancel_timers(&mut st);
+                        st.home_channel
+                    };
+                    memory::trim();
                     if let Some(home2) = home2 {
                         say_to(
                             &self.core,
@@ -169,13 +179,19 @@ impl VoiceEventHandler for GuildTrackEvents {
                             }
                             Err(e) => {
                                 error!(guild = %self.guild_id, error = %e, "recovery rejoin failed");
-                                let mut st = self.core.registry.get(self.guild_id);
-                                st.recovering = false;
-                                st.queue.clear();
-                                st.playing = false;
-                                st.current = None;
-                                st.voice_channel_id = None;
-                                drop(st);
+                                {
+                                    let mut st = self.core.registry.get(self.guild_id);
+                                    st.recovering = false;
+                                    clear_queue_and_shrink(&mut st);
+                                    drop_handle(&mut st);
+                                    st.playing = false;
+                                    st.current = None;
+                                    st.previous = None;
+                                    st.voice_channel_id = None;
+                                    st.current_is_cached = false;
+                                    cancel_timers(&mut st);
+                                }
+                                memory::trim();
                                 if let Some(home2) = home {
                                     say_to(
                                         &self.core,
@@ -303,6 +319,18 @@ fn cancel_timers(st: &mut GuildState) {
     }
 }
 
+fn clear_queue_and_shrink(st: &mut GuildState) {
+    st.queue.clear();
+    st.queue.shrink_to_fit();
+}
+
+fn drop_handle(st: &mut GuildState) {
+    if let Some(h) = st.current_handle.take() {
+        drop(h);
+    }
+    st.current_is_cached = false;
+}
+
 async fn set_channel_status(core: &Core, guild_id: GuildId, track: &Track) {
     if !core.cfg.audio.channel_status_updates {
         return;
@@ -355,7 +383,8 @@ async fn clear_channel_status(core: &Core, guild_id: GuildId) {
     }
 }
 
-pub fn schedule_auto_leave(core: &Arc<Core>, guild_id: GuildId) {    let mut st = core.registry.get(guild_id);
+pub fn schedule_auto_leave(core: &Arc<Core>, guild_id: GuildId) {
+    let mut st = core.registry.get(guild_id);
     if let Some(t) = st.inactivity_task.take() {
         t.abort();
     }
@@ -368,9 +397,14 @@ pub fn schedule_auto_leave(core: &Arc<Core>, guild_id: GuildId) {    let mut st 
         }
         let _ = core2.voice.remove(guild_id).await;
         st.voice_channel_id = None;
+        st.current = None;
+        st.previous = None;
+        drop_handle(&mut st);
+        clear_queue_and_shrink(&mut st);
         cancel_timers(&mut st);
         let home = st.home_channel;
         drop(st);
+        memory::trim();
 
         let prefix = core2.prefix(Some(guild_id)).await;
         if let Some(home) = home {
@@ -411,8 +445,11 @@ pub async fn schedule_stay_return(core: &Arc<Core>, guild_id: GuildId) {
 
         let _ = core2.voice.remove(guild_id).await;
         st.voice_channel_id = None;
+        drop_handle(&mut st);
+        clear_queue_and_shrink(&mut st);
         let home = st.home_channel;
         drop(st);
+        memory::trim();
 
         tokio::time::sleep(Duration::from_millis(300)).await;
         match core2.voice.join(guild_id, target).await {
@@ -446,6 +483,10 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
         let mut st = core.registry.get(guild_id);
         st.current = None;
         st.playing = false;
+        drop_handle(&mut st);
+        st.queue.shrink_to_fit();
+        drop(st);
+        memory::trim();
         return;
     };
     let mut st = core.registry.get(guild_id);
@@ -480,10 +521,12 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
         st.previous = None;
         st.playing = false;
         st.loop_mode = LoopMode::Off;
-        st.current_is_cached = false;
+        drop_handle(&mut st);
+        st.queue.shrink_to_fit();
         cancel_timers(&mut st);
         let home = st.home_channel;
         drop(st);
+        memory::trim();
 
         if had_activity {
             clear_channel_status(&core, guild_id).await;
@@ -580,6 +623,9 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
         st.current_is_cached = false;
         st.current_handle = Some(handle.clone());
     }
+    // Previous handle's buffers (Opus cache / yt-dlp pipes) were just freed
+    // by the overwrite above. Trim now so nonstop loops don't stair-step RSS.
+    memory::trim();
 
     // Status + NP card AFTER the stream is rolling so the mixer never
     // competes with HTTP work in its first critical 20ms frames.
@@ -634,14 +680,21 @@ pub async fn handle_voice_state_update(
         let moved = matches!((old.channel_id, new.channel_id), (Some(a), Some(b)) if a != b);
 
         if left {
-            let mut st = core.registry.get(guild_id);
-            st.request_stop();
-            st.playing = false;
-            st.current = None;
-            st.previous = None;
-            st.voice_channel_id = None;
-            let np = st.np_message.take();
-            drop(st);
+            let np = {
+                let mut st = core.registry.get(guild_id);
+                st.request_stop();
+                st.playing = false;
+                st.current = None;
+                st.previous = None;
+                st.voice_channel_id = None;
+                drop_handle(&mut st);
+                clear_queue_and_shrink(&mut st);
+                st.loop_mode = LoopMode::Off;
+                st.current_is_cached = false;
+                cancel_timers(&mut st);
+                st.np_message.take()
+            };
+            memory::trim();
 
             if let Some((c, m)) = np {
                 let _ = serenity::all::GenericChannelId::new(c.get())
@@ -718,11 +771,14 @@ pub async fn handle_voice_state_update(
     };
     {
         let mut st = core.registry.get(guild_id);
-        st.queue.clear();
+        clear_queue_and_shrink(&mut st);
+        drop_handle(&mut st);
         st.loop_mode = LoopMode::Off;
         st.playing = false;
         st.current = None;
         st.previous = None;
+        st.current_is_cached = false;
+        cancel_timers(&mut st);
         // Only mark the intentional-stop flag when we are actually interrupting
         // live audio; otherwise no TrackEnd will ever consume it and a later
         // natural end would be swallowed (player wedged in "playing" state).
@@ -730,9 +786,12 @@ pub async fn handle_voice_state_update(
             st.request_stop();
         }
     }
+    memory::trim();
 
     if was_live
         && let Some(call) = core.voice.get(guild_id) {
+            // drop handle first so Compressed buffer is freed before stop
+            core.registry.get(guild_id).current_handle.take();
             call.lock().await.stop();
         }
 
@@ -820,8 +879,12 @@ pub async fn restart_current_at(
             let _ = h.stop();
         }
         st.playing = false;
+        st.current_is_cached = false;
         (track, st.volume)
     };
+    // Return the freed Compressed buffer pages to the OS before allocating a
+    // new cache (which is 5-20 MB). Keeps RSS from stair-stepping on seeks.
+    memory::trim();
 
     let kbps = core.cfg.audio.bitrate_kbps.clamp(64, 512);
     let bitrate = Bitrate::Bits((kbps * 1000) as i32);

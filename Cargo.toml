@@ -29,6 +29,7 @@ small-fixed-array = "0.4.10"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+libc = "0.2" # for malloc_trim — keep RSS flat in long-running deploys
 
 [profile.release]
 lto = "thin"

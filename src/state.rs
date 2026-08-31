@@ -63,28 +63,31 @@ impl fmt::Display for SourceTag {
     }
 }
 
-fn clean_patterns() -> Vec<regex::Regex> {
-    const PATTERNS: &[&str] = &[
-        r"\(re-?upload[^)]*\)",
-        r"\[re-?upload[^\]]*\]",
-        r"\(official[^)]*\)",
-        r"\[official[^\]]*\]",
-        r"\(lyrics?[^)]*\)",
-        r"\[lyrics?[^\]]*\]",
-        r"\(audio\)",
-        r"\[audio\]",
-        r"\(slowed[^)]*\)",
-        r"\[slowed[^\]]*\]",
-    ];
-    PATTERNS
-        .iter()
-        .map(|p| {
-            RegexBuilder::new(p)
-                .case_insensitive(true)
-                .build()
-                .expect("static regex must compile")
-        })
-        .collect()
+fn clean_patterns() -> &'static Vec<regex::Regex> {
+    static RE: std::sync::OnceLock<Vec<regex::Regex>> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        const PATTERNS: &[&str] = &[
+            r"\(re-?upload[^)]*\)",
+            r"\[re-?upload[^\]]*\]",
+            r"\(official[^)]*\)",
+            r"\[official[^\]]*\]",
+            r"\(lyrics?[^)]*\)",
+            r"\[lyrics?[^\]]*\]",
+            r"\(audio\)",
+            r"\[audio\]",
+            r"\(slowed[^)]*\)",
+            r"\[slowed[^\]]*\]",
+        ];
+        PATTERNS
+            .iter()
+            .map(|p| {
+                RegexBuilder::new(p)
+                    .case_insensitive(true)
+                    .build()
+                    .expect("static regex must compile")
+            })
+            .collect()
+    })
 }
 
 pub fn clean_title(title: &str) -> String {

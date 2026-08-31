@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use crate::config;
+use crate::memory;
 use crate::player;
 use crate::{Context, Error};
 
@@ -115,9 +116,14 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
         let mut st = core.registry.get(guild_id);
         st.request_stop();
         st.queue.clear();
+        st.queue.shrink_to_fit();
         st.current = None;
         st.previous = None;
         st.playing = false;
+        st.current_is_cached = false;
+        if let Some(h) = st.current_handle.take() {
+            drop(h);
+        }
         st.loop_mode = crate::state::LoopMode::Off;
         if let Some(t) = st.inactivity_task.take() {
             t.abort();
@@ -128,6 +134,7 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
     }
     let _ = core.voice.remove(guild_id).await;
     core.registry.get(guild_id).voice_channel_id = None;
+    memory::trim();
 
     let comps = crate::ui::info_container(format!(
         "{}  Left and disabled 24/7 mode.\n-# From now on I auto-leave after 5 idle minutes. Re-enable anytime with `+join`.",

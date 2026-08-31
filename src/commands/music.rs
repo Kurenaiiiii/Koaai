@@ -2,6 +2,7 @@ use std::time::Duration;
 
 
 use crate::config;
+use crate::memory;
 use crate::player;
 use crate::state::{LoopMode, Track};
 use crate::{sources, Context, Error};
@@ -194,6 +195,9 @@ pub async fn play(
         }
     }
 
+    // Release large temp buffers (yt-dlp stdout, search JSON) back to OS.
+    memory::trim();
+
     if !core.registry.get(guild_id).playing {
         tokio::spawn(async move {
             player::play_next(core, guild_id).await;
@@ -238,18 +242,24 @@ pub async fn skip(
         return err(ctx, "Nothing is playing.").await;
     }
 
-    {
+    let handle = {
         let mut st = core.registry.get(guild_id);
         for _ in 0..amount.saturating_sub(1) {
             st.queue.pop_front();
         }
+        if st.queue.is_empty() {
+            st.queue.shrink_to_fit();
+        }
         st.request_stop();
         st.playing = false;
         st.previous = st.current.take();
-    }
-    if let Some(h) = core.registry.get(guild_id).current_handle.take() {
+        st.current_is_cached = false;
+        st.current_handle.take()
+    };
+    if let Some(h) = handle {
         let _ = h.stop();
     }
+    memory::trim();
     let core2 = core.clone();
     tokio::spawn(async move { player::play_next(core2, guild_id).await });
     ok(
@@ -269,18 +279,22 @@ pub async fn stop(ctx: Context<'_>) -> Result<(), Error> {
     let core = ctx.data().core.clone();
     vc_guard(&ctx).await?;
 
-    {
+    let handle = {
         let mut st = core.registry.get(guild_id);
         st.request_stop();
         st.queue.clear();
+        st.queue.shrink_to_fit();
         st.loop_mode = LoopMode::Off;
         st.playing = false;
         st.previous = None;
         st.current = None;
-    }
-    if let Some(h) = core.registry.get(guild_id).current_handle.take() {
+        st.current_is_cached = false;
+        st.current_handle.take()
+    };
+    if let Some(h) = handle {
         let _ = h.stop();
     }
+    memory::trim();
 
     if core.stay_channel(guild_id).await.is_some() {
         ok(
@@ -303,6 +317,7 @@ pub async fn stop(ctx: Context<'_>) -> Result<(), Error> {
                 t.abort();
             }
         }
+        memory::trim();
         ok(
             ctx,
             &format!(
@@ -601,7 +616,12 @@ pub async fn clear_queue(ctx: Context<'_>) -> Result<(), Error> {
     let guild_id = ctx.guild_id().expect("guild only");
     let core = ctx.data().core.clone();
 
-    core.registry.get(guild_id).queue.clear();
+    {
+        let mut st = core.registry.get(guild_id);
+        st.queue.clear();
+        st.queue.shrink_to_fit();
+    }
+    memory::trim();
     ok(
         ctx,
         &format!(
@@ -626,8 +646,15 @@ pub async fn remove(
         if pos == 0 || pos as usize > st.queue.len() {
             return err(ctx, "Invalid position.").await;
         }
-        st.queue.remove(pos as usize - 1).expect("bounds checked above")
+        let r = st.queue.remove(pos as usize - 1).expect("bounds checked above");
+        if st.queue.is_empty() {
+            st.queue.shrink_to_fit();
+        }
+        r
     };
+    if core.registry.get(guild_id).queue.is_empty() {
+        memory::trim();
+    }
     ok(
         ctx,
         &format!(

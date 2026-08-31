@@ -3,6 +3,7 @@ use std::sync::{LazyLock, OnceLock};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use crate::memory;
 use crate::settings::SourcesConfig;
 use crate::log_sources;
 
@@ -14,6 +15,18 @@ pub fn init(cfg: SourcesConfig) {
 
 fn cfg() -> &'static SourcesConfig {
     CFG.get_or_init(SourcesConfig::default)
+}
+
+static HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("Koaai/1.0 (+https://github.com/Kurenaiiiii/Koaai)")
+        .build()
+        .expect("reqwest client")
+});
+
+fn http() -> reqwest::Client {
+    HTTP.clone()
 }
 
 const YTDLP: &str = "yt-dlp";
@@ -268,7 +281,7 @@ pub async fn match_on_youtube(query: &str) -> Result<ResolvedMeta, String> {
 // ── YouTube Music search (InnerTube WEB_REMIX, like Nodelink's ytmsearch) ────
 
 pub async fn search_ytmusic(query: &str) -> Result<ResolvedMeta, String> {
-    let http = reqwest::Client::new();
+    let http = http();
     let body = serde_json::json!({
         "context": {"client": {
             "clientName": "WEB_REMIX",
@@ -479,6 +492,9 @@ pub async fn resolve_playlist(url: &str) -> Result<Vec<ResolvedMeta>, String> {
             out.push(m);
         }
     }
+    // Free the raw yt-dlp stdout (can be many MB for large playlists) before returning.
+    drop(stdout);
+    memory::trim();
     if out.is_empty() {
         return Err("Playlist empty or failed to load".into());
     }
@@ -682,7 +698,7 @@ impl SpotifyRef {
                 v.into_iter().next().ok_or("Spotify collection was empty".to_string())
             });
         }
-        let http = reqwest::Client::new();
+        let http = http();
         let token = spotify_token(&http).await?;
         let resp = http
             .get(format!("https://api.spotify.com/v1/tracks/{}", self.id))
@@ -700,7 +716,7 @@ impl SpotifyRef {
     async fn resolve_collection(self) -> Result<Vec<ResolvedMeta>, String> {
         match self.kind {
             SpotifyKind::Album => {
-                let http = reqwest::Client::new();
+                let http = http();
                 let token = spotify_token(&http).await?;
                 self.resolve_album(&http, &token).await
             }
@@ -751,7 +767,7 @@ impl SpotifyRef {
 
         let ui = format!("https://open.spotify.com/playlist/{}", self.id);
         let url = format!("https://open.spotify.com/embed/playlist/{}", self.id);
-        let http = reqwest::Client::new();
+        let http = http();
         let html = http
             .get(&url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
@@ -808,12 +824,16 @@ impl SpotifyRef {
         if metas.is_empty() {
             return Err("Playlist empty or failed to load".into());
         }
-        log_sources!(
-            "Spotify",
-            "playlist `{}` -> {} tracks (embed)",
-            entity.get("title").and_then(|t| t.as_str()).unwrap_or("?"),
-            metas.len()
-        );
+        let title = entity
+            .get("title")
+            .and_then(|t| t.as_str())
+            .unwrap_or("?")
+            .to_string();
+        // Free the large embed HTML + JSON before returning (can be 500 KB+).
+        drop(data);
+        drop(html);
+        memory::trim();
+        log_sources!("Spotify", "playlist `{title}` -> {} tracks (embed)", metas.len());
         Ok(metas)
     }
 }
@@ -822,6 +842,11 @@ impl SpotifyRef {
 
 const SC_BASE: &str = "https://api-v2.soundcloud.com";
 static SC_CLIENT_ID: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
+static SC_ASSET_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"https://a-v2\.sndcdn\.com/assets/[a-zA-Z0-9-]+\.js").unwrap());
+static SC_ID_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r#"(?:[?&/]?(?:client_id)[\s:=&]*"?|"data":\{"id":")([A-Za-z0-9]{32})"?"#).unwrap()
+});
 
 async fn sc_client_id(http: &reqwest::Client) -> Result<String, String> {
     {
@@ -848,12 +873,8 @@ async fn sc_client_id(http: &reqwest::Client) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    let asset_re =
-        regex::Regex::new(r"https://a-v2\.sndcdn\.com/assets/[a-zA-Z0-9-]+\.js").unwrap();
-    let id_re = regex::Regex::new(
-        r#"(?:[?&/]?(?:client_id)[\s:=&]*"?|"data":\{"id":")([A-Za-z0-9]{32})"?"#,
-    )
-    .unwrap();
+    let asset_re = &*SC_ASSET_RE;
+    let id_re = &*SC_ID_RE;
 
     for asset in asset_re.find_iter(&html).take(12) {
         let url = asset.as_str();
@@ -905,7 +926,7 @@ struct ScUser {
 }
 
 pub async fn search_soundcloud(query: &str) -> Result<ResolvedMeta, String> {
-    let http = reqwest::Client::new();
+    let http = http();
     let client_id = sc_client_id(&http).await?;
     let url = format!(
         "{SC_BASE}/search?q={}&client_id={client_id}&limit=5&offset=0&linked_partitioning=1&facet=model",
@@ -951,7 +972,7 @@ pub async fn search_soundcloud(query: &str) -> Result<ResolvedMeta, String> {
 // ── spsearch / amsearch → metadata then matched on YouTube ──────────────────
 
 pub async fn spotify_search_match(query: &str) -> Result<ResolvedMeta, String> {
-    let http = reqwest::Client::new();
+    let http = http();
     let token = spotify_token(&http).await?;
     let resp = http
         .get(format!(
@@ -998,7 +1019,7 @@ struct ItunesTrack {
 }
 
 pub async fn apple_music_search_match(query: &str) -> Result<ResolvedMeta, String> {
-    let http = reqwest::Client::new();
+    let http = http();
     let resp = http
         .get(format!(
             "https://itunes.apple.com/search?media=music&entity=song&limit=1&term={}",

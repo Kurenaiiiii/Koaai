@@ -3,6 +3,7 @@ mod config;
 mod core;
 mod db;
 mod logger;
+mod memory;
 mod player;
 mod settings;
 mod sources;
@@ -244,16 +245,21 @@ async fn main() {
 
     // Crash-safe SQLite: WAL checkpoint every hour so even a hard kill never
     // loses more than an hour of prefix/24-7/report writes.
+    // Also keeps RSS flat: stale guilds are pruned every 10 min and
+    // malloc_trim is called to return glibc freelists to the OS (prevents
+    // the 9 MB -> 28 MB idle creep and the nonstop-loop stair-step).
     {
         let core2 = core.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut checkpoint_counter: u8 = 0;
             loop {
                 tick.tick().await;
                 // Drop state for guilds that are disconnected AND empty —
                 // keeps long-running RSS flat no matter how many servers
                 // the bot has ever touched.
+                let mut pruned = 0usize;
                 for g in core2.registry.guild_ids() {
                     let stale = {
                         let st = core2.registry.get(g);
@@ -264,10 +270,30 @@ async fn main() {
                     };
                     if stale {
                         core2.registry.remove(g);
+                        pruned += 1;
                     }
                 }
-                if let Err(e) = core2.db.checkpoint() {
-                    log_warn!("db", "hourly checkpoint failed: {e}");
+                if pruned > 0 {
+                    log_info!("gc", "pruned {pruned} stale guild(s)");
+                }
+                // Shrink any overgrown VecDeque capacities and trim heap.
+                // Even active guilds can retain 10+ MB of queue capacity after
+                // a large playlist; shrinking on idle boundaries prevents that
+                // from pinning RSS forever.
+                for gid in core2.registry.guild_ids() {
+                    let mut st = core2.registry.get(gid);
+                    if st.queue.capacity() > 32 && st.queue.len() < st.queue.capacity() / 2 {
+                        st.queue.shrink_to_fit();
+                    }
+                }
+                crate::memory::trim();
+
+                checkpoint_counter = checkpoint_counter.wrapping_add(1);
+                // Checkpoint roughly hourly (600s * 6 = 3600s)
+                if checkpoint_counter % 6 == 0 {
+                    if let Err(e) = core2.db.checkpoint() {
+                        log_warn!("db", "hourly checkpoint failed: {e}");
+                    }
                 }
             }
         });
