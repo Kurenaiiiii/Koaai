@@ -25,7 +25,6 @@ pub mod emojis {
     pub const CAT_SETTINGS: &str = "<:2636securityfilter:1500104728896606381>";
     pub const CAT_INFO: &str = "<:908915information:1500080758239531159>";
 
-    pub const NP: &str = "<:798008booster:1500080747959291904>";
     pub const PLAY: &str = "<:circleplay:1500101049183113266>";
     pub const PAUSE: &str = "<:pause:1500101615951151207>";
     pub const SKIP: &str = "<:fastforward:1500109903585345678>";

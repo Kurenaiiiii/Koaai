@@ -335,32 +335,45 @@ async fn set_channel_status(core: &Core, guild_id: GuildId, track: &Track) {
     if !core.cfg.audio.channel_status_updates {
         return;
     }
-    let vc = core.registry.get(guild_id).voice_channel_id;
+    // Use non-creating lookup to avoid phantom inserts.
+    let vc = match core.registry.get_if_exists(guild_id) {
+        Some(st) => st.voice_channel_id,
+        None => None,
+    };
     if let Some(vc) = vc {
-        // "🎧  Now Playing · {title} — {author}" (Discord hard-caps at 500)
-        let mut status = String::new();
-        status.push_str(config::emojis::NP);
-        status.push_str("  Now Playing · ");
-        status.push_str(&track.title);
-        if !track.author.is_empty() && track.author != "Unknown" {
-            status.push_str(" — ");
-            status.push_str(&track.author);
+        // Minimal but distinct: title in bold, author in normal weight.
+        // Discord renders `**bold**` in voice status where supported; otherwise falls back to plain.
+        // Keep it to just those two fields as requested.
+        let title = track.title.chars().take(80).collect::<String>();
+        let author_raw = if track.author.is_empty() || track.author == "Unknown" {
+            String::new()
+        } else {
+            track.author.chars().take(50).collect::<String>()
+        };
+        let mut status = if author_raw.is_empty() {
+            format!("**{title}**")
+        } else {
+            format!("**{title}** — {author_raw}")
+        };
+        status = status.chars().take(300).collect();
+        if status.trim().is_empty() {
+            status = "**Now Playing**".to_string();
         }
-        status = status.chars().take(490).collect();
         match core
             .http_api
             .edit_channel(
                 serenity::all::GenericChannelId::new(vc.get()),
-                &EditChannel::new().status(status),
+                &EditChannel::new().status(status.clone()),
                 None,
             )
             .await
         {
-            Ok(_) => {}
+            Ok(_) => tracing::debug!(%vc, %status, "voice status updated"),
             Err(e) => warn!(
                 error = %e,
                 %vc,
-                "voice channel status update failed (bot needs Manage Channels on the VC)"
+                status = %status.chars().take(80).collect::<String>(),
+                "voice channel status update failed (bot needs View Channel + Connect + Manage Channels on the VC; also ensure VC is a Voice/Stage channel)"
             ),
         }
     }
@@ -370,8 +383,12 @@ async fn clear_channel_status(core: &Core, guild_id: GuildId) {
     if !core.cfg.audio.channel_status_updates {
         return;
     }
-    let vc = core.registry.get(guild_id).voice_channel_id;
+    let vc = match core.registry.get_if_exists(guild_id) {
+        Some(st) => st.voice_channel_id,
+        None => None,
+    };
     if let Some(vc) = vc {
+        // Empty string clears the VC status per Discord API.
         let _ = core
             .http_api
             .edit_channel(
@@ -380,6 +397,7 @@ async fn clear_channel_status(core: &Core, guild_id: GuildId) {
                 None,
             )
             .await;
+        tracing::debug!(%vc, "voice status cleared");
     }
 }
 
@@ -391,8 +409,13 @@ pub fn schedule_auto_leave(core: &Arc<Core>, guild_id: GuildId) {
     let core2 = core.clone();
     st.inactivity_task = Some(tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(core2.cfg.audio.auto_leave_secs)).await;
-        let mut st = core2.registry.get(guild_id);
+        // Use non-creating lookup — guild may have been pruned while sleeping.
+        let Some(mut st) = core2.registry.get_if_exists(guild_id) else {
+            return;
+        };
         if core2.stay_channel(guild_id).await.is_some() || !st.queue.is_empty() || st.playing {
+            // Idle timer no longer relevant — clear our own handle without self-abort.
+            st.inactivity_task = None;
             return;
         }
         let _ = core2.voice.remove(guild_id).await;
@@ -401,7 +424,9 @@ pub fn schedule_auto_leave(core: &Arc<Core>, guild_id: GuildId) {
         st.previous = None;
         drop_handle(&mut st);
         clear_queue_and_shrink(&mut st);
-        cancel_timers(&mut st);
+        // Don't call cancel_timers (would abort self); just clear the other timer.
+        st.inactivity_task = None;
+        st.stay_return_task.take().map(|t| t.abort());
         let home = st.home_channel;
         drop(st);
         memory::trim();
@@ -434,12 +459,18 @@ pub async fn schedule_stay_return(core: &Arc<Core>, guild_id: GuildId) {
     st.stay_return_task = Some(tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(core2.cfg.audio.auto_leave_secs)).await;
 
-        let mut st = core2.registry.get(guild_id);
+        let Some(mut st) = core2.registry.get_if_exists(guild_id) else {
+            return;
+        };
         let target = match core2.stay_channel(guild_id).await {
             Some(t) => t,
-            None => return,
+            None => {
+                st.stay_return_task = None;
+                return;
+            }
         };
         if st.voice_channel_id == Some(target) || st.playing || !st.queue.is_empty() {
+            st.stay_return_task = None;
             return;
         }
 
@@ -447,6 +478,9 @@ pub async fn schedule_stay_return(core: &Arc<Core>, guild_id: GuildId) {
         st.voice_channel_id = None;
         drop_handle(&mut st);
         clear_queue_and_shrink(&mut st);
+        st.stay_return_task = None;
+        // Keep inactivity_task cleared too if present.
+        st.inactivity_task.take().map(|t| t.abort());
         let home = st.home_channel;
         drop(st);
         memory::trim();
@@ -736,7 +770,12 @@ pub async fn handle_voice_state_update(
         return;
     }
 
-    let bot_vc = core.registry.get(guild_id).voice_channel_id;
+    // Use non-creating lookup — otherwise every VoiceStateUpdate in every guild
+    // inserts a phantom GuildState, which defeats GC and leaks DashMap shards.
+    let bot_vc = match core.registry.get_if_exists(guild_id) {
+        Some(st) => st.voice_channel_id,
+        None => return,
+    };
     let Some(bot_vc) = bot_vc else { return };
     if old.channel_id != Some(bot_vc) || new.user_id == core.bot_id {
         return;

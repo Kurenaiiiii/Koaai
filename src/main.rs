@@ -262,7 +262,11 @@ async fn main() {
                 let mut pruned = 0usize;
                 for g in core2.registry.guild_ids() {
                     let stale = {
-                        let st = core2.registry.get(g);
+                        // Don't use `get` that would insert phantom guilds; `guild_ids`
+                        // guarantees existence, but be explicit.
+                        let Some(st) = core2.registry.get_if_exists(g) else {
+                            continue;
+                        };
                         st.voice_channel_id.is_none()
                             && st.queue.is_empty()
                             && st.current.is_none()
@@ -274,16 +278,32 @@ async fn main() {
                     }
                 }
                 if pruned > 0 {
-                    log_info!("gc", "pruned {pruned} stale guild(s)");
+                    // DashMap shards grow but never shrink on remove — reclaim bucket memory.
+                    core2.registry.shrink_to_fit();
+                    // Avoid log spam: only emit once per hour (or when burst >=10).
+                    // The bot was spamming "pruned 3 stale guild(s)" every 10 min for days
+                    // because VoiceStateUpdate was inserting phantom GuildStates for
+                    // every voice event via `registry.get()`; that phantom bug is now
+                    // fixed with `get_if_exists`, but throttle logging anyway.
+                    if pruned >= 10 || checkpoint_counter % 6 == 5 {
+                        log_info!(
+                            "gc",
+                            "pruned {pruned} stale guild(s) — {} guilds remain",
+                            core2.registry.len()
+                        );
+                    } else {
+                        tracing::debug!(pruned, remaining = core2.registry.len(), "gc pruned stale guilds");
+                    }
                 }
                 // Shrink any overgrown VecDeque capacities and trim heap.
                 // Even active guilds can retain 10+ MB of queue capacity after
                 // a large playlist; shrinking on idle boundaries prevents that
                 // from pinning RSS forever.
                 for gid in core2.registry.guild_ids() {
-                    let mut st = core2.registry.get(gid);
-                    if st.queue.capacity() > 32 && st.queue.len() < st.queue.capacity() / 2 {
-                        st.queue.shrink_to_fit();
+                    if let Some(mut st) = core2.registry.get_if_exists(gid) {
+                        if st.queue.capacity() > 32 && st.queue.len() < st.queue.capacity() / 2 {
+                            st.queue.shrink_to_fit();
+                        }
                     }
                 }
                 crate::memory::trim();

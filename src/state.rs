@@ -417,8 +417,30 @@ impl Registry {
             })
     }
 
+    /// Non-creating lookup — returns None if the guild has never been touched.
+    /// Use this in hot paths like VoiceStateUpdate where phantom inserts would
+    /// cause unbounded registry growth and defeat GC.
+    pub fn get_if_exists(
+        &self,
+        guild_id: GuildId,
+    ) -> Option<dashmap::mapref::one::RefMut<'_, GuildId, GuildState>> {
+        self.inner.get_mut(&guild_id)
+    }
+
     pub fn remove(&self, guild_id: GuildId) {
         self.inner.remove(&guild_id);
+    }
+
+    /// Reclaims hashbrown shard capacity after mass removal.
+    /// DashMap's shards grow but never shrink on `remove`; without this the
+    /// registry's internal buckets stay at peak size even after pruning, which
+    /// pins RSS in long-running bots that have seen many guilds.
+    pub fn shrink_to_fit(&self) {
+        self.inner.shrink_to_fit();
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
     }
 
     pub fn guild_ids(&self) -> Vec<GuildId> {
