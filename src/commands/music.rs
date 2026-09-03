@@ -86,6 +86,13 @@ pub async fn play(
     let guild_id = ctx.guild_id().expect("guild only");
     let core = ctx.data().core.clone();
 
+    // Ack up front: voice join + yt-dlp resolve can exceed the 3s slash
+    // interaction window (especially with Discord degraded — see the recent
+    // 503/1001 gateway errors). Without this the interaction expires and
+    // every `ctx.send` after it fails with Unknown interaction.
+    // No-op for prefix invocations.
+    ctx.defer().await?;
+
     let Some(user_vc) = requester_channel(&ctx).await else {
         return err(ctx, "You need to be in a voice channel!").await;
     };

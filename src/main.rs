@@ -396,12 +396,16 @@ match &error {
                             .await;
                         return;
                     }
-                    poise::FrameworkError::Command { ctx, .. } => {
+                    poise::FrameworkError::Command { ctx, error, .. } => {
                         // Expected, user-facing rejections (locked to 24/7,
                         // not in VC, etc.) are already replied to by the
                         // command itself — log them quietly, not as errors.
+                        // NOTE: log Debug ({error:?}), not Display ({error}).
+                        // Display for Command is always just "error in command
+                        // `/x`" and hides the inner cause (e.g. Unknown
+                        // interaction vs 400 Invalid Form Body).
                         let name = &ctx.command().qualified_name;
-                        log_info!("commands", "{name} returned an error: {error}");
+                        log_info!("commands", "{name} returned an error: {error:?}");
                         return;
                     }
                     _ => {}
