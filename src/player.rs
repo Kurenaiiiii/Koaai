@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use serenity::builder::EditChannel;
 use serenity::model::id::{ChannelId, GuildId};
 use serenity::model::voice::VoiceState;
 use songbird::events::{Event, EventContext, EventHandler as VoiceEventHandler, TrackEvent};
@@ -341,39 +340,40 @@ async fn set_channel_status(core: &Core, guild_id: GuildId, track: &Track) {
         None => None,
     };
     if let Some(vc) = vc {
-        // Minimal but distinct: title in bold, author in normal weight.
-        // Discord renders `**bold**` in voice status where supported; otherwise falls back to plain.
-        // Keep it to just those two fields as requested.
-        let title = track.title.chars().take(80).collect::<String>();
+        // Just title + author as plain text — Discord renders VC status as
+        // plain text (no markdown), so `**bold**` would show literally.
+        let title = track.title.chars().take(100).collect::<String>();
         let author_raw = if track.author.is_empty() || track.author == "Unknown" {
             String::new()
         } else {
-            track.author.chars().take(50).collect::<String>()
+            track.author.chars().take(60).collect::<String>()
         };
         let mut status = if author_raw.is_empty() {
-            format!("**{title}**")
+            title
         } else {
-            format!("**{title}** — {author_raw}")
+            format!("{title} — {author_raw}")
         };
-        status = status.chars().take(300).collect();
+        // Discord caps voice status at 500 chars; stay well under.
+        status = status.chars().take(400).collect();
         if status.trim().is_empty() {
-            status = "**Now Playing**".to_string();
+            status = "Now Playing".to_string();
         }
+        // NOTE: must use the dedicated voice-status endpoint
+        // (PUT /channels/{id}/voice-status). Sending `status` via the generic
+        // Modify Channel PATCH silently does nothing — Discord accepts the
+        // request (Ok) but ignores the unknown field, which is why the status
+        // never updated and no error was ever logged.
         match core
             .http_api
-            .edit_channel(
-                serenity::all::GenericChannelId::new(vc.get()),
-                &EditChannel::new().status(status.clone()),
-                None,
-            )
+            .edit_voice_status(vc, &serde_json::json!({ "status": status }), None)
             .await
         {
-            Ok(_) => tracing::debug!(%vc, %status, "voice status updated"),
+            Ok(()) => log_info!("vcstatus", "status set in <#{vc}>"),
             Err(e) => warn!(
                 error = %e,
                 %vc,
                 status = %status.chars().take(80).collect::<String>(),
-                "voice channel status update failed (bot needs View Channel + Connect + Manage Channels on the VC; also ensure VC is a Voice/Stage channel)"
+                "voice channel status update failed (needs SET_VOICE_CHANNEL_STATUS perm on the VC; bot must be connected to it)"
             ),
         }
     }
@@ -388,16 +388,14 @@ async fn clear_channel_status(core: &Core, guild_id: GuildId) {
         None => None,
     };
     if let Some(vc) = vc {
-        // Empty string clears the VC status per Discord API.
-        let _ = core
+        // Empty string clears the VC status (same dedicated endpoint).
+        if let Err(e) = core
             .http_api
-            .edit_channel(
-                serenity::all::GenericChannelId::new(vc.get()),
-                &EditChannel::new().status(""),
-                None,
-            )
-            .await;
-        tracing::debug!(%vc, "voice status cleared");
+            .edit_voice_status(vc, &serde_json::json!({ "status": "" }), None)
+            .await
+        {
+            warn!(error = %e, %vc, "voice status clear failed");
+        }
     }
 }
 
