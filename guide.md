@@ -74,12 +74,23 @@ docker compose pull && docker compose up -d
 
 ---
 
-## Path C — raw binary, no Docker
+## Path C — bundle zip, no Docker
 
-1. Install Node 22+ and a yt-dlp nightly yourself.
-2. Get the `koaai` binary from a GitHub release.
-3. Same `.env` setup as Path B (`cp .env.example .env`, fill TOKEN).
-4. Run `./koaai`.
+Every build produces `koaai-bundle-linux-x64.zip` (Actions artifacts, and
+attached to each Release). Inside, perfectly organized: `koaai` + `bin/yt-dlp`
++ `bin/node`. Nothing to install.
+
+1. Download the zip from the latest
+   [Release](https://github.com/Kurenaiiiii/Koaai/releases) (or any Actions run).
+2. Unzip it anywhere, `cd` into the folder.
+3. Create `.env` next to `koaai` (same format as Path B — TOKEN required).
+4. Make sure the bot finds its tools (they're in `bin/`, same folder layout
+   the bot expects on PATH):
+   ```bash
+   export PATH="$PWD/bin:$PATH"
+   ./koaai
+   ```
+   (Or move `bin/` anywhere on your PATH once.)
 
 ---
 

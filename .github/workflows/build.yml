@@ -51,3 +51,55 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+  bundle:
+    name: Portable bundle (koaai + yt-dlp + node)
+    runs-on: ubuntu-22.04
+    needs: [binary]
+    permissions:
+      contents: write # only used to attach the zip to releases
+    steps:
+      - name: Download koaai binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: koaai-linux-x64
+          path: bundle-staging
+
+      - name: Assemble bundle
+        run: |
+          set -euo pipefail
+          rm -rf bundle && mkdir -p bundle/bin
+          mv bundle-staging/koaai bundle/koaai
+          echo "── yt-dlp nightly ──"
+          curl -fsSL --retry 3 -o bundle/bin/yt-dlp \
+            "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp_linux"
+          echo "── Node 22 (latest v22.x) ──"
+          NODE_FILE="$(curl -fsSL https://nodejs.org/dist/latest-v22.x/ | grep -oE 'node-v22\.[0-9]+\.[0-9]+-linux-x64\.tar\.xz' | head -1)"
+          [ -n "$NODE_FILE" ] || { echo "could not resolve latest Node v22"; exit 1; }
+          curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/latest-v22.x/${NODE_FILE}"
+          tar -xf /tmp/node.tar.xz -C /tmp
+          mv /tmp/node-v22*-linux-x64/bin/node bundle/bin/node
+          rm -rf /tmp/node.tar.xz /tmp/node-v22*-linux-x64
+          chmod +x bundle/koaai bundle/bin/yt-dlp bundle/bin/node
+          echo "── verify ──"
+          ./bundle/bin/node --version
+          ./bundle/bin/yt-dlp --version
+          file bundle/koaai | head -1
+          echo "── zip (layout: koaai + bin/yt-dlp + bin/node) ──"
+          ( cd bundle && zip -qr ../koaai-bundle-linux-x64.zip koaai bin )
+          unzip -l koaai-bundle-linux-x64.zip
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: koaai-bundle-linux-x64
+          path: koaai-bundle-linux-x64.zip
+          if-no-files-found: error
+
+      # Stable download URL for the guide + panel users without Docker:
+      # https://github.com/<owner>/Koaai/releases/latest/download/koaai-bundle-linux-x64.zip
+      - name: Attach bundle to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" koaai-bundle-linux-x64.zip --clobber
