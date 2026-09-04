@@ -205,6 +205,26 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    // Data-dir sanity first: bot.db + config.toml live in the working directory
+    // and are created on first boot (empty server dir is normal). Probe
+    // writability up front so a read-only/missing CWD fails with a clear
+    // message instead of a cryptic sqlite error later. (rusqlite opens lazily,
+    // so without this the real OS error would be misattributed.)
+    {
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<unknown>".into());
+        match std::fs::write(".koaai_writetest", b"ok") {
+            Ok(()) => {
+                let _ = std::fs::remove_file(".koaai_writetest");
+                log_info!("selfcheck", "data dir {cwd} is writable");
+            }
+            Err(e) => {
+                log_error!("selfcheck", "data dir {cwd} is NOT writable: {e} — the bot needs a writable working directory for bot.db/config.toml");
+                std::process::exit(1);
+            }
+        }
+    }
     let database = match db::Db::open("bot.db") {
         Ok(d) => d,
         Err(e) => {

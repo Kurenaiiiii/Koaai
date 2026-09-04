@@ -41,7 +41,12 @@ pub struct Db {
 impl Db {
     pub fn open(path: &str) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        // WAL is preferred (crash safety), but some container filesystems
+        // can't do it — fall back to the default journal instead of refusing
+        // to boot.
+        if let Err(e) = conn.pragma_update(None, "journal_mode", "WAL") {
+            tracing::warn!(path, error = %e, "WAL mode unavailable, using default journal mode");
+        }
         conn.execute_batch(SCHEMA)?;
         info!(path, "database opened and schema verified");
         Ok(Self { conn: Mutex::new(conn) })

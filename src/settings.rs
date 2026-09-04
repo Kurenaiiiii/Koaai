@@ -169,8 +169,13 @@ pub fn load() -> Config {
             }
         },
         Err(_) => {
-            let _ = std::fs::write(path, DEFAULT_TOML);
-            println!("wrote default config to {path}");
+            // Don't swallow this: on a read-only CWD the "wrote default"
+            // message below would be a lie and the later db open would fail
+            // mysteriously. (main.rs also probes writability before this.)
+            match std::fs::write(path, DEFAULT_TOML) {
+                Ok(()) => println!("wrote default config to {path}"),
+                Err(e) => eprintln!("[CONFIG] could NOT write {path}: {e} — check working directory permissions"),
+            }
             Config::default()
         }
     }
