@@ -38,11 +38,16 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # The bot binary comes from the build context (CI: target/release/koaai).
+# It lives on the (read-only under Pterodactyl) image layer — executing from
+# there is fine, only WRITES need the mounted dir below.
 COPY koaai /app/koaai
 RUN chmod +x /app/koaai
 
-# CWD is the data dir: bot.db, config.toml (auto-created) and .env live here.
-# Mount it from the host (compose does ./data:/app/data) so restarts keep data.
-WORKDIR /app/data
+# CWD MUST be the writable mount, not /app/*:
+# Pterodactyl runs containers with a read-only rootfs and only
+# /home/container is a writable volume. bot.db, config.toml (auto-created)
+# and .env live here. (An earlier revision used /app/data and broke panels
+# with "Read-only file system" — never again.)
+WORKDIR /home/container
 
 CMD ["/app/koaai"]
