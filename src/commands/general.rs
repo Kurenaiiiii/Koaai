@@ -73,6 +73,12 @@ pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
     let guild_id = ctx.guild_id().expect("guild only");
     let core = ctx.data().core.clone();
 
+    // Ack up front (ephemeral, like all join replies): the voice handshake in
+    // ensure_voice can exceed the 3s slash window on a cold join, expiring the
+    // interaction so the reply fails with Unknown interaction (10062).
+    // No-op for prefix invocations.
+    ctx.defer_ephemeral().await?;
+
     let user_vc = ctx.guild().and_then(|g| {
         g.voice_states
             .get(&ctx.author().id)
