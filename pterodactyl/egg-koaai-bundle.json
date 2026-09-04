@@ -1,0 +1,92 @@
+{
+    "_comment": "Koaai (bundle) — for hosts WITHOUT GHCR access. Upload koaai-bundle-linux-x64.zip (from any GitHub release) via the file manager, or set BUNDLE_URL and the install script downloads it. Secrets come from variables below, never from files.",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-09-04T00:00:00+00:00",
+    "name": "Koaai (Bundle)",
+    "author": "kurenai@koaai.dev",
+    "description": "Koaai via portable bundle: upload koaai-bundle-linux-x64.zip (koaai + bin/yt-dlp + bin/node) or give a download URL. No Docker knowledge needed.",
+    "features": null,
+    "docker_images": {
+        "ghcr.io/ptero-eggs/yolks:debian_bookworm": "ghcr.io/ptero-eggs/yolks:debian_bookworm"
+    },
+    "file_denylist": [],
+    "startup": "if [ -d bin ]; then export PATH=\"$(pwd)/bin:$PATH\"; fi; if [ ! -f .env ] && [ -n \"$TOKEN\" ]; then printf 'TOKEN=%s\\n' \"$TOKEN\" > .env; fi; exec ./koaai",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": [\r\n        \"ready as\"\r\n    ]\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\r\n# Koaai (bundle) install: needs koaai + bin/yt-dlp + bin/node in /mnt/server.\r\n# Either upload koaai-bundle-linux-x64.zip via the file manager first,\r\n# or set BUNDLE_URL to a direct zip link (e.g. the GitHub release asset).\r\ncd /mnt/server\r\n\r\nif [ ! -f koaai ] || [ ! -f bin/yt-dlp ]; then\r\n    if [ -f koaai-bundle-linux-x64.zip ]; then\r\n        echo \"zip found - extracting...\"\r\n    elif [ -n \"${BUNDLE_URL:-}\" ]; then\r\n        echo \"downloading bundle...\"\r\n        curl -fsSL --retry 3 -o koaai-bundle-linux-x64.zip \"$BUNDLE_URL\" || { echo \"download failed\"; exit 1; }\r\n    else\r\n        echo \"ERROR: upload koaai-bundle-linux-x64.zip first, or set BUNDLE_URL, then Reinstall.\"\r\n        exit 1\r\n    fi\r\n    if command -v unzip >/dev/null; then\r\n        unzip -oq koaai-bundle-linux-x64.zip\r\n    else\r\n        python3 -m zipfile -e koaai-bundle-linux-x64.zip .\r\n    fi\r\nfi\r\n\r\nchmod +x koaai bin/yt-dlp bin/node 2>/dev/null || true\r\n\r\necho \"--- verifying ---\"\r\n./koaai --version 2>/dev/null || file koaai | head -1\r\n./bin/yt-dlp --version || { echo \"YT-DLP BROKEN\"; exit 1; }\r\n./bin/node --version  || { echo \"NODE BROKEN\"; exit 1; }\r\n\r\necho \"install complete\"\r\nexit 0",
+            "container": "ghcr.io/ptero-eggs/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Bot Token",
+            "description": "Discord bot token.",
+            "env_variable": "TOKEN",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Bundle URL",
+            "description": "Direct link to koaai-bundle-linux-x64.zip (e.g. GitHub release asset). Leave empty if you upload the zip yourself.",
+            "env_variable": "BUNDLE_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Owner ID",
+            "description": "Your Discord user ID - unlocks the report dashboard in DMs.",
+            "env_variable": "OWNER_ID",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Dev Guild ID",
+            "description": "Scope slash-command registration to one guild while testing. Leave empty for global registration.",
+            "env_variable": "DEV_GUILD_ID",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Spotify Client ID",
+            "description": "Enables Spotify links and spsearch.",
+            "env_variable": "SPOTIFY_CLIENT_ID",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Spotify Client Secret",
+            "description": "Spotify OAuth secret.",
+            "env_variable": "SPOTIFY_CLIENT_SECRET",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        }
+    ]
+}

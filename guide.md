@@ -11,8 +11,13 @@ install dependencies by hand.
 
 ## Path A — Pterodactyl panel (easiest)
 
-1. Panel → **Nests** → **Import** → upload `pterodactyl/egg-koaai.json`.
-2. Create a server from the **Koaai** egg. Image is already set, nothing to upload.
+1. Panel → **Nests** → **Import** → upload an egg. Two to choose from:
+   - `pterodactyl/egg-koaai.json` (**Koaai**, recommended) — everything baked
+     into the Docker image, nothing to upload ever.
+   - `pterodactyl/egg-koaai-bundle.json` (**Koaai (Bundle)**) — for hosts that
+     can't pull from GHCR. Upload `koaai-bundle-linux-x64.zip` first, or set
+     the **Bundle URL** variable to the release asset link.
+2. Create a server from the egg. Image is already set, nothing to upload (bundle egg: see above).
 3. Fill variables: **Bot Token** (required), Owner ID / Spotify keys (optional).
 4. Press **Start**. Done.
 5. `bot.db` and `config.toml` live in the server dir — edit `config.toml` in the
