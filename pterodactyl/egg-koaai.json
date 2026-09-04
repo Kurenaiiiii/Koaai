@@ -13,7 +13,7 @@
         "ghcr.io/kurenaiiiii/koaai:latest": "ghcr.io/kurenaiiiii/koaai:latest"
     },
     "file_denylist": [],
-    "startup": "/app/koaai",
+    "startup": "cd /home/container && exec /app/koaai",
     "config": {
         "files": "{}",
         "startup": "{\r\n    \"done\": [\r\n        \"ready as\"\r\n    ]\r\n}",

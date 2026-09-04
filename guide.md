@@ -91,4 +91,5 @@ docker compose pull && docker compose up -d
 | VC status never shows | Bot needs the **Set Voice Channel Status** permission *and* must be sitting in that VC. |
 | Playback errors on every track | YouTube moved again — update the image (fresh yt-dlp), restart. |
 | Bot won't start / token rejected | `.env` missing or wrong TOKEN. Panel: check the Bot Token variable. |
+| `Read-only file system (os error 30)` on panel | Old egg started the bot in `/app/data` (image rootfs is read-only). Re-import the egg (startup is now `cd /home/container && exec /app/koaai`) and restart. |
 | `docker compose` can't find `.env` | Run the command from the same folder as the compose file. |
