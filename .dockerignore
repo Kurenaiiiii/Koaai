@@ -1,0 +1,7 @@
+# Keep the build context tiny. NOTE: the `koaai` binary itself must NOT be
+# ignored — Dockerfile COPYs it in (CI places target/release/koaai there).
+.git
+target
+.env
+data/
+*.tar.gz

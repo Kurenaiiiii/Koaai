@@ -1,19 +1,19 @@
 {
-    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL - PTERODACTYL.IO",
+    "_comment": "Koaai — everything (bot + yt-dlp nightly + Node 22) is baked into the Docker image. No uploads, no install downloads. Secrets come from variables below, never from the image.",
     "meta": {
         "version": "PTDL_v2",
         "update_url": null
     },
-    "exported_at": "2026-08-26T03:00:00+00:00",
+    "exported_at": "2026-09-04T00:00:00+00:00",
     "name": "Koaai",
     "author": "kurenai@koaai.dev",
-    "description": "Koaai - single-process Rust Discord music bot. Downloads the prebuilt koaai binary (or uses one you upload), installs yt-dlp nightly and Node.js. Nothing is compiled on the host.",
+    "description": "Koaai - single-process Rust Discord music bot. Image already contains koaai + yt-dlp + Node. Just set the token and start.",
     "features": null,
     "docker_images": {
-        "ghcr.io/ptero-eggs/yolks:debian_bookworm": "ghcr.io/ptero-eggs/yolks:debian_bookworm"
+        "ghcr.io/kurenaiiiii/koaai:latest": "ghcr.io/kurenaiiiii/koaai:latest"
     },
     "file_denylist": [],
-    "startup": "if [ -d bin ]; then export PATH=\"$(pwd)/bin:$PATH\"; fi; if [ ! -f .env ] && [ -n \"$TOKEN\" ]; then printf 'TOKEN=%s\\n' \"$TOKEN\" > .env; fi; exec ./koaai",
+    "startup": "/app/koaai",
     "config": {
         "files": "{}",
         "startup": "{\r\n    \"done\": [\r\n        \"ready as\"\r\n    ]\r\n}",
@@ -22,7 +22,7 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\r\n# Koaai installation \u2014 NUCLEAR EDITION: no network needed.\r\n# Upload koaai-bundle.tar.gz (built by make-bundle.sh) via the panel,\r\n# or drop loose files (koaai + bin/yt-dlp + bin/node) \u2014 that's it.\r\n\r\ncd /mnt/server\r\n\r\nif [ -f koaai-bundle.tar.gz ]; then\r\n    echo \"bundle found - extracting...\"\r\n    tar -xzf koaai-bundle.tar.gz -C /mnt/server\r\nelif [ -f koaai ] && [ -f bin/yt-dlp ]; then\r\n    echo \"loose files found - using them as-is\"\r\nelse\r\n    echo \"ERROR: upload koaai-bundle.tar.gz (or koaai + bin/) first, then Reinstall.\"\r\n    exit 1\r\nfi\r\n\r\nchmod +x koaai bin/yt-dlp bin/node 2>/dev/null || true\r\n\r\necho \"--- verifying ---\"\r\nfile koaai | head -1\r\n./bin/yt-dlp --version || { echo \"YT-DLP BROKEN\"; exit 1; }\r\n./bin/node --version  || { echo \"NODE BROKEN\"; exit 1; }\r\n\r\necho -e \"install complete - nothing was downloaded from the internet\"\r\nexit 0",
+            "script": "#!/bin/bash\r\n# Nothing to install — the server image already has koaai + yt-dlp + node.\r\n# (This runs in the installer container, not the server image, so there is\r\n# nothing to verify here. Secrets come from the variables below.)\r\necho \"koaai image ready — set your variables and press Start\"\r\nexit 0",
             "container": "ghcr.io/ptero-eggs/installers:debian",
             "entrypoint": "bash"
         }

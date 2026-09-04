@@ -1,0 +1,11 @@
+# Self-host Koaai with one command:  cp .env.example .env  →  fill TOKEN  →  docker compose up -d
+# No secrets live in this file — everything comes from .env (see guide.md).
+services:
+  koaai:
+    image: ghcr.io/kurenaiiiii/koaai:latest
+    container_name: koaai
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
