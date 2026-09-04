@@ -328,6 +328,27 @@ async fn main() {
                 }
                 crate::memory::trim();
 
+                // One line per tick so RAM creep can be attributed instead of
+                // guessed: bot heap vs live yt-dlp/node children. Anything
+                // left over vs the panel number is page cache (harmless,
+                // kernel-reclaimed).
+                {
+                    let (self_mb, child_mb, nchild, names) = crate::memory::snapshot();
+                    if nchild > 0 {
+                        log_info!(
+                            "gc",
+                            "mem self={self_mb}MB children={child_mb}MB ({nchild}: {names}) guilds={}",
+                            core2.registry.len()
+                        );
+                    } else {
+                        log_info!(
+                            "gc",
+                            "mem self={self_mb}MB children=0MB guilds={}",
+                            core2.registry.len()
+                        );
+                    }
+                }
+
                 checkpoint_counter = checkpoint_counter.wrapping_add(1);
                 // Checkpoint roughly hourly (600s * 6 = 3600s)
                 if checkpoint_counter % 6 == 0 {
