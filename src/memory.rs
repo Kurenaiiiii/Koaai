@@ -94,6 +94,64 @@ fn snapshot_linux() -> (u64, u64, usize, String) {
     (self_mb, child_kb / 1024, count, names.join(","))
 }
 
+/// Container totals — i.e. what the Pterodactyl panel shows: (total_mb, file_cache_mb).
+/// cgroup v2 first, v1 fallback. None when unavailable (non-container hosts).
+/// Panel memory = process RSS + page cache. After hours of streaming, tens of
+/// MB of cache (yt-dlp/node binaries, shared libs) is normal and harmless —
+/// the kernel reclaims it instantly under pressure.
+pub fn cgroup() -> Option<(u64, u64)> {
+    #[cfg(target_os = "linux")]
+    {
+        // cgroup v2 (memory.current + memory.stat "file").
+        if let (Ok(cur), Ok(stat)) = (
+            std::fs::read_to_string("/sys/fs/cgroup/memory.current"),
+            std::fs::read_to_string("/sys/fs/cgroup/memory.stat"),
+        ) {
+            let total = cur.trim().parse::<u64>().ok()? / 1024 / 1024;
+            let file = stat
+                .lines()
+                .find_map(|l| {
+                    let mut p = l.split_whitespace();
+                    if p.next() == Some("file") {
+                        p.next()?.parse::<u64>().ok()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0)
+                / 1024
+                / 1024;
+            return Some((total, file));
+        }
+        // cgroup v1 fallback ("cache" key).
+        if let (Ok(cur), Ok(stat)) = (
+            std::fs::read_to_string("/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+            std::fs::read_to_string("/sys/fs/cgroup/memory/memory.stat"),
+        ) {
+            let total = cur.trim().parse::<u64>().ok()? / 1024 / 1024;
+            let cache = stat
+                .lines()
+                .find_map(|l| {
+                    let mut p = l.split_whitespace();
+                    if p.next() == Some("cache") {
+                        p.next()?.parse::<u64>().ok()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0)
+                / 1024
+                / 1024;
+            return Some((total, cache));
+        }
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -101,6 +159,12 @@ mod tests {
         let (self_mb, _, _, _) = super::snapshot();
         #[cfg(target_os = "linux")]
         assert!(self_mb > 0, "the bot itself must have RSS");
+    }
+
+    #[test]
+    fn cgroup_does_not_panic() {
+        // Whatever the host has (v2, v1, or nothing) — must never panic.
+        let _ = super::cgroup();
     }
 }
 

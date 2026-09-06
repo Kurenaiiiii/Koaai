@@ -334,16 +334,20 @@ async fn main() {
                 // kernel-reclaimed).
                 {
                     let (self_mb, child_mb, nchild, names) = crate::memory::snapshot();
+                    // Panel number for comparison (total + page-cache part).
+                    let cg = crate::memory::cgroup()
+                        .map(|(t, f)| format!(" cgroup={t}MB(file={f}MB)"))
+                        .unwrap_or_default();
                     if nchild > 0 {
                         log_info!(
                             "gc",
-                            "mem self={self_mb}MB children={child_mb}MB ({nchild}: {names}) guilds={}",
+                            "mem self={self_mb}MB children={child_mb}MB ({nchild}: {names}){cg} guilds={}",
                             core2.registry.len()
                         );
                     } else {
                         log_info!(
                             "gc",
-                            "mem self={self_mb}MB children=0MB guilds={}",
+                            "mem self={self_mb}MB children=0MB{cg} guilds={}",
                             core2.registry.len()
                         );
                     }
