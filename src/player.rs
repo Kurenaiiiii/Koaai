@@ -755,7 +755,7 @@ pub async fn handle_voice_state_update(
         let moved = matches!((old.channel_id, new.channel_id), (Some(a), Some(b)) if a != b);
 
         if left {
-            let np = {
+            let (np, last_rejoin) = {
                 let mut st = core.registry.get(guild_id);
                 st.request_stop();
                 st.playing = false;
@@ -767,7 +767,7 @@ pub async fn handle_voice_state_update(
                 st.loop_mode = LoopMode::Off;
                 st.current_is_cached = false;
                 cancel_timers(&mut st);
-                st.np_message.take()
+                (st.np_message.take(), st.stay_last_rejoin)
             };
             memory::trim();
 
@@ -777,6 +777,69 @@ pub async fn handle_voice_state_update(
                     .await;
             }
             let _ = core.voice.remove(guild_id).await;
+
+            // 24/7 self-healing: an unexpected voice drop must not strand the
+            // bot outside its stay channel until the next restart (Discord
+            // drops sessions — CloudFlare restarts, UDP timeouts — and plain
+            // /stop never removes the session, so `left` here means the
+            // connection actually died, or the bot was moved out/kicked).
+            // Intentional leaves are unaffected: /leave clears stay first.
+            // Rejoin is bounded: only when humans wait in the stay channel,
+            // and at most ~once a minute (kick-loop guard).
+            if let Some(stay_vc) = core.stay_channel(guild_id).await {
+                let humans_waiting = ctx
+                    .cache
+                    .guild(guild_id)
+                    .map(|g| {
+                        g.voice_states.iter().any(|vs| {
+                            vs.channel_id == Some(stay_vc) && vs.user_id != core.bot_id
+                        })
+                    })
+                    .unwrap_or(false);
+                let recent =
+                    last_rejoin.is_some_and(|t| t.elapsed() < Duration::from_secs(60));
+                if humans_waiting && !recent {
+                    let core2 = core.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        if core2.stay_channel(guild_id).await != Some(stay_vc) {
+                            return;
+                        }
+                        match core2.voice.join(guild_id, stay_vc).await {
+                            Ok(call) => {
+                                {
+                                    let mut handler = call.lock().await;
+                                    let _ = handler.deafen(true).await;
+                                    apply_bitrate(&mut handler, &core2);
+                                }
+                                attach_track_events(&call, &core2, guild_id).await;
+                                if let Some(mut st) = core2.registry.get_if_exists(guild_id) {
+                                    st.voice_channel_id = Some(stay_vc);
+                                    st.stay_last_rejoin = Some(Instant::now());
+                                }
+                                if let Some(home) = core2
+                                    .registry
+                                    .get_if_exists(guild_id)
+                                    .and_then(|st| st.home_channel)
+                                {
+                                    say_to(
+                                        &core2,
+                                        home,
+                                        format!(
+                                            "{}  Lost the voice connection but I'm back in the 24/7 channel.\n-# 24/7 mode is still on — use `play` to resume.",
+                                            config::emojis::SYNC
+                                        ),
+                                    )
+                                    .await;
+                                }
+                            }
+                            Err(e) => {
+                                error!(guild = %guild_id, error = %e, "stay auto-rejoin failed")
+                            }
+                        }
+                    });
+                }
+            }
             return;
         }
 

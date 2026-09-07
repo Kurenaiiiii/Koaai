@@ -308,10 +308,22 @@ pub async fn stop(ctx: Context<'_>) -> Result<(), Error> {
     memory::trim();
 
     if core.stay_channel(guild_id).await.is_some() {
+        // Idle in the stay channel: no auto-leave/return timer should be
+        // pending, but make sure none survived from an earlier flow.
+        {
+            let mut st = core.registry.get(guild_id);
+            if let Some(t) = st.inactivity_task.take() {
+                t.abort();
+            }
+            if let Some(t) = st.stay_return_task.take() {
+                t.abort();
+            }
+        }
+        memory::trim();
         ok(
             ctx,
             &format!(
-                "{} Stopped. 24/7 mode is active, so I'm staying in voice.\n-# Use `+leave` to release me.",
+                "{} Stopped. 24/7 mode is active, so I'm staying in voice.\n-# Queue cleared • Use `play` to resume, or `leave` to release me.",
                 config::emojis::STOP
             ),
         )

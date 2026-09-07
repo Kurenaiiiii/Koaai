@@ -548,7 +548,25 @@ pub mod router {
                 memory::trim();
 
                 if core.stay_channel(guild_id).await.is_some() {
-                    ephemeral(core, interaction, "Stopped. (24/7 active)".to_string()).await;
+                    {
+                        let mut st = core.registry.get(guild_id);
+                        if let Some(t) = st.inactivity_task.take() {
+                            t.abort();
+                        }
+                        if let Some(t) = st.stay_return_task.take() {
+                            t.abort();
+                        }
+                    }
+                    memory::trim();
+                    ephemeral(
+                        core,
+                        interaction,
+                        format!(
+                            "{}  Stopped. 24/7 mode is active, so I'm staying in voice.\n-# Queue cleared • Use `play` to resume, or `leave` to release me.",
+                            config::emojis::STOP
+                        ),
+                    )
+                    .await;
                 } else {
                     let _ = core.voice.remove(guild_id).await;
                     {

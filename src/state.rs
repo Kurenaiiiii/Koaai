@@ -330,6 +330,10 @@ pub struct GuildState {
     /// Explicit user commands (play/skip/stop/...) clear it — user intent
     /// always breaks the circuit.
     pub cooldown_until: Option<std::time::Instant>,
+    /// Last time the 24/7 watchdog rejoined after an unexpected voice drop.
+    /// Bounds rejoin flapping (e.g. an admin repeatedly kicking the bot) to
+    /// ~once a minute. Deliberately preserved across state resets.
+    pub stay_last_rejoin: Option<std::time::Instant>,
     /// True when the current track plays from an in-memory Opus cache
     /// (set after the first seek) — native seeks are instant on it.
     pub current_is_cached: bool,
@@ -395,6 +399,7 @@ impl Default for GuildState {
             error_streak: 0,
             recovering: false,
             cooldown_until: None,
+            stay_last_rejoin: None,
             current_is_cached: false,
             inactivity_task: None,
             stay_return_task: None,
@@ -606,6 +611,7 @@ mod tests {
     fn circuit_breaker_opens_and_breaks() {
         let mut st = GuildState::default();
         assert!(!st.circuit_open(), "fresh state -> circuit closed");
+        assert!(st.stay_last_rejoin.is_none(), "no auto-rejoin yet");
 
         st.cooldown_until =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
