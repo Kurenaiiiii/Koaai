@@ -1,5 +1,9 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// How long automatic retries stay suppressed after a systemic stop
+/// (max-errors or failed recovery). Explicit user commands break it early.
+const CIRCUIT_COOLDOWN: Duration = Duration::from_secs(60);
 
 use serenity::model::id::{ChannelId, GuildId};
 use serenity::model::voice::VoiceState;
@@ -82,6 +86,10 @@ impl VoiceEventHandler for GuildTrackEvents {
                     info!(guild = %self.guild_id, "end after intentional stop; command owns flow");
                     return None;
                 }
+                if st.circuit_open() {
+                    tracing::debug!(guild = %self.guild_id, "end during cooldown; suppressing");
+                    return None;
+                }
                 drop(st);
                 play_next(self.core.clone(), self.guild_id).await;
             }
@@ -90,11 +98,31 @@ impl VoiceEventHandler for GuildTrackEvents {
                 if st.take_fresh_stop() {
                     return None;
                 }
+                // Open circuit: a recent systemic stop is cooling down. Drop the
+                // event silently — no skip, no rejoin, no announcement. Explicit
+                // user commands break the circuit, so this only suppresses
+                // automatic retries (which is exactly what storms are made of).
+                if st.circuit_open() {
+                    tracing::debug!(guild = %self.guild_id, "error during cooldown; suppressing");
+                    return None;
+                }
                 st.playing = false;
                 st.error_streak = st.error_streak.saturating_add(1);
                 let streak = st.error_streak;
-                let already_recovering = st.recovering;
+                // Single-flight the recovery flag: check AND set under one lock
+                // hold. The old code read it, dropped the lock, and set it
+                // later — concurrent Error events all saw `false` and fired
+                // parallel rejoins that cancelled each other
+                // ("request was cancelled/dropped") and re-fed the queue
+                // several times over.
+                let mut do_recovery = false;
+                if streak >= self.core.cfg.audio.error_streak_rejoin_at && !st.recovering {
+                    st.recovering = true;
+                    do_recovery = true;
+                }
+                let already_recovering = st.recovering && !do_recovery;
                 let home = st.home_channel;
+                let vc = st.voice_channel_id;
                 drop(st);
 
                 error!(guild = %self.guild_id, streak, "track error");
@@ -111,6 +139,8 @@ impl VoiceEventHandler for GuildTrackEvents {
                         st.previous = None;
                         st.current_is_cached = false;
                         st.error_streak = 0;
+                        st.recovering = false;
+                        st.cooldown_until = Some(Instant::now() + CIRCUIT_COOLDOWN);
                         cancel_timers(&mut st);
                         st.home_channel
                     };
@@ -120,7 +150,7 @@ impl VoiceEventHandler for GuildTrackEvents {
                             &self.core,
                             home2,
                             format!(
-                                "{}  Too many consecutive track failures — stopped playback and cleared the queue.\n-# Check yt-dlp: `pip install --upgrade yt-dlp --pre`, then play again.",
+                                "{}  Too many consecutive track failures — stopped playback and cleared the queue.\n-# Update to the latest image (fresh yt-dlp) and try again in a minute.",
                                 config::emojis::ERROR
                             ),
                         )
@@ -129,19 +159,19 @@ impl VoiceEventHandler for GuildTrackEvents {
                     return None;
                 }
 
+                // A rejoin is already in flight and owns the flow — don't
+                // advance the queue underneath it.
+                if already_recovering {
+                    return None;
+                }
+
                 // Dead-player recovery (port of music.js fix): several errors in a
                 // row while still "connected" means something is systemically broken.
                 // Force a real voice rejoin once and retry the failed track instead
                 // of burning the whole queue.
-                if streak >= self.core.cfg.audio.error_streak_rejoin_at && !already_recovering {
-                    let mut st = self.core.registry.get(self.guild_id);
-                    st.recovering = true;
-                    let vc = st.voice_channel_id;
-                    let home2 = st.home_channel;
-                    drop(st);
-
+                if do_recovery {
                     warn!(guild = %self.guild_id, "attempting voice rejoin recovery");
-                    if let Some(home2) = home2 {
+                    if let Some(home2) = home {
                         say_to(
                             &self.core,
                             home2,
@@ -165,14 +195,21 @@ impl VoiceEventHandler for GuildTrackEvents {
                                     apply_bitrate(&mut handler, &self.core);
                                 }
                                 attach_track_events(&call, &self.core, self.guild_id).await;
-                                self.core.registry.get(self.guild_id).voice_channel_id = Some(vc);
-                                self.core.registry.get(self.guild_id).recovering = false;
-                                // retry the track that just failed
-                                let mut st = self.core.registry.get(self.guild_id);
-                                if let Some(failed) = st.current.take() {
-                                    st.queue.push_front(failed);
+                                {
+                                    let mut st = self.core.registry.get(self.guild_id);
+                                    st.recovering = false;
+                                    // The world may have moved on while we were
+                                    // rejoining (e.g. a stop opened the circuit) —
+                                    // don't resurrect a dead flow.
+                                    if st.circuit_open() {
+                                        return None;
+                                    }
+                                    st.voice_channel_id = Some(vc);
+                                    // retry the track that just failed
+                                    if let Some(failed) = st.current.take() {
+                                        st.queue.push_front(failed);
+                                    }
                                 }
-                                drop(st);
                                 play_next(self.core.clone(), self.guild_id).await;
                                 return None;
                             }
@@ -183,11 +220,14 @@ impl VoiceEventHandler for GuildTrackEvents {
                                     st.recovering = false;
                                     clear_queue_and_shrink(&mut st);
                                     drop_handle(&mut st);
+                                    st.loop_mode = LoopMode::Off;
                                     st.playing = false;
                                     st.current = None;
                                     st.previous = None;
                                     st.voice_channel_id = None;
                                     st.current_is_cached = false;
+                                    st.error_streak = 0;
+                                    st.cooldown_until = Some(Instant::now() + CIRCUIT_COOLDOWN);
                                     cancel_timers(&mut st);
                                 }
                                 memory::trim();
@@ -196,7 +236,7 @@ impl VoiceEventHandler for GuildTrackEvents {
                                         &self.core,
                                         home2,
                                         format!(
-                                            "{}  Could not recover the voice connection — playback stopped.\n-# Try `join` and play again; if it persists, check yt-dlp.",
+                                            "{}  Could not recover the voice connection — playback stopped.\n-# Try `join` and play again in a minute; if it persists, update the image.",
                                             config::emojis::ERROR
                                         ),
                                     )
@@ -206,6 +246,9 @@ impl VoiceEventHandler for GuildTrackEvents {
                             }
                         }
                     }
+                    // No VC remembered — nothing to rejoin to; give up the
+                    // recovery claim so future errors can try again.
+                    self.core.registry.get(self.guild_id).recovering = false;
                 }
 
                 if let Some(home) = home {

@@ -117,6 +117,8 @@ pub async fn play(
 
     core.registry.get(guild_id).home_channel =
         Some(serenity::all::ChannelId::new(ctx.channel_id().get()));
+    // Explicit user action breaks any open error circuit.
+    core.registry.get(guild_id).break_circuit();
     if let Some(t) = core.registry.get(guild_id).inactivity_task.take() {
         t.abort();
     }
@@ -261,6 +263,7 @@ pub async fn skip(
         st.playing = false;
         st.previous = st.current.take();
         st.current_is_cached = false;
+        st.break_circuit();
         st.current_handle.take()
     };
     if let Some(h) = handle {
@@ -296,6 +299,7 @@ pub async fn stop(ctx: Context<'_>) -> Result<(), Error> {
         st.previous = None;
         st.current = None;
         st.current_is_cached = false;
+        st.break_circuit();
         st.current_handle.take()
     };
     if let Some(h) = handle {

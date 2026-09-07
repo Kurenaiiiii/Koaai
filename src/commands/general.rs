@@ -103,6 +103,8 @@ pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
 
     core.registry.get(guild_id).home_channel =
         Some(serenity::all::ChannelId::new(ctx.channel_id().get()));
+    // Fresh explicit summon — user intent breaks any open error circuit.
+    core.registry.get(guild_id).break_circuit();
     core.set_stay_channel(guild_id, user_vc).await;
 
     let comps = crate::ui::success_container(&format!(
@@ -127,6 +129,7 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
         st.previous = None;
         st.playing = false;
         st.current_is_cached = false;
+        st.break_circuit();
         if let Some(h) = st.current_handle.take() {
             drop(h);
         }

@@ -324,6 +324,12 @@ pub struct GuildState {
     stop_flag_at: Option<std::time::Instant>,
     pub error_streak: u32,
     pub recovering: bool,
+    /// Open-circuit deadline after a systemic stop (max-errors or failed
+    /// recovery). While open, automatic Error/End events are dropped silently
+    /// so a deterministically-failing source can't spin a rejoin+retry storm.
+    /// Explicit user commands (play/skip/stop/...) clear it — user intent
+    /// always breaks the circuit.
+    pub cooldown_until: Option<std::time::Instant>,
     /// True when the current track plays from an in-memory Opus cache
     /// (set after the first seek) — native seeks are instant on it.
     pub current_is_cached: bool,
@@ -357,6 +363,17 @@ impl GuildState {
             ..Default::default()
         }
     }
+
+    /// True while a systemic stop is cooling down (see `cooldown_until`).
+    pub fn circuit_open(&self) -> bool {
+        self.cooldown_until
+            .is_some_and(|t| std::time::Instant::now() < t)
+    }
+
+    /// User did something explicit — the failure may be over, let events flow.
+    pub fn break_circuit(&mut self) {
+        self.cooldown_until = None;
+    }
 }
 
 impl Default for GuildState {
@@ -377,6 +394,7 @@ impl Default for GuildState {
             stop_flag_at: None,
             error_streak: 0,
             recovering: false,
+            cooldown_until: None,
             current_is_cached: false,
             inactivity_task: None,
             stay_return_task: None,
@@ -582,6 +600,26 @@ mod tests {
                 .unwrap(),
         );
         assert!(!st.take_fresh_stop(), "stale flag must NOT swallow a natural end");
+    }
+
+    #[test]
+    fn circuit_breaker_opens_and_breaks() {
+        let mut st = GuildState::default();
+        assert!(!st.circuit_open(), "fresh state -> circuit closed");
+
+        st.cooldown_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        assert!(st.circuit_open(), "future deadline -> circuit open");
+
+        st.break_circuit();
+        assert!(!st.circuit_open(), "explicit user action breaks the circuit");
+
+        st.cooldown_until = Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap(),
+        );
+        assert!(!st.circuit_open(), "elapsed deadline -> circuit closed");
     }
 
     #[test]

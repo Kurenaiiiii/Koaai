@@ -459,6 +459,7 @@ pub mod router {
                     st.request_stop();
                     st.playing = false;
                     st.current_is_cached = false;
+                    st.break_circuit();
                     st.current_handle.take()
                 };
                 let _ = interaction
@@ -502,6 +503,7 @@ pub mod router {
                     st.playing = false;
                     st.previous = st.current.take();
                     st.current_is_cached = false;
+                    st.break_circuit();
                     if st.queue.is_empty() {
                         st.queue.shrink_to_fit();
                     }
@@ -537,6 +539,7 @@ pub mod router {
                     st.previous = None;
                     st.current = None;
                     st.current_is_cached = false;
+                    st.break_circuit();
                     st.current_handle.take()
                 };
                 if let Some(h) = handle {
