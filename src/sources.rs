@@ -150,46 +150,56 @@ fn parse_mix_entry(v: &serde_json::Value) -> Option<crate::state::MixCandidate> 
     })
 }
 
-/// Fetches up to `AUTOPLAY_MIX_LIMIT` entries of the seed's YouTube Mix.
-/// Returns them raw (unfiltered) — filtering happens in `autoplay_pick`.
+/// Fetches up to `AUTOPLAY_MIX_LIMIT` entries of the seed's mix.
+/// YouTube-Music mix (`RDAMVM`, music-catalog only) first — it drifts far
+/// less over chained hops than the general YouTube mix (`RD`), which happily
+/// wanders into vlogs and 2-hour compilations after a few generations.
+/// Falls back to `RD` when the music mix is missing/empty.
+/// Returns entries raw (unfiltered) — filtering happens in `autoplay_pick`.
 pub async fn fetch_mix(seed_video_id: &str) -> Result<Vec<crate::state::MixCandidate>, String> {
     use crate::log_sources;
     use crate::state::AUTOPLAY_MIX_LIMIT;
 
-    let url = format!(
-        "https://www.youtube.com/watch?v={seed_video_id}&list=RD{seed_video_id}"
-    );
     let limit = AUTOPLAY_MIX_LIMIT.to_string();
-    let stdout = run_ytdlp(&[
-        "-j",
-        "--flat-playlist",
-        "--playlist-end",
-        &limit,
-        &url,
-    ])
-    .await?;
-    let mut out = Vec::new();
-    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if let Some(m) = parse_mix_entry(&v) {
-            out.push(m);
+    for (kind, list_id) in [
+        ("ytmusic", format!("RDAMVM{seed_video_id}")),
+        ("youtube", format!("RD{seed_video_id}")),
+    ] {
+        let url = format!("https://www.youtube.com/watch?v={seed_video_id}&list={list_id}");
+        match run_ytdlp(&["-j", "--flat-playlist", "--playlist-end", &limit, &url]).await {
+            Ok(stdout) => {
+                let mut out = Vec::new();
+                for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                        continue;
+                    };
+                    if let Some(m) = parse_mix_entry(&v) {
+                        out.push(m);
+                    }
+                }
+                drop(stdout);
+                crate::memory::trim();
+                if !out.is_empty() {
+                    log_sources!(
+                        "Autoplay",
+                        "{kind} mix for `{seed_video_id}` -> {} candidates",
+                        out.len()
+                    );
+                    return Ok(out);
+                }
+                log_sources!(
+                    "Autoplay",
+                    "{kind} mix for `{seed_video_id}` came back empty, trying next",
+                );
+            }
+            Err(e) => {
+                log_sources!("Autoplay", "{kind} mix failed ({e}), trying next");
+            }
         }
     }
-    drop(stdout);
-    crate::memory::trim();
-    if out.is_empty() {
-        return Err(format!(
-            "YouTube Mix for `{seed_video_id}` came back empty"
-        ));
-    }
-    log_sources!(
-        "Autoplay",
-        "mix for `{seed_video_id}` -> {} candidates",
-        out.len()
-    );
-    Ok(out)
+    Err(format!(
+        "No usable mix (ytmusic or youtube) for `{seed_video_id}`"
+    ))
 }
 
 fn youtube_search(query: &str) -> String {

@@ -165,6 +165,59 @@ pub fn normalize_author(author: &str) -> String {
         .to_string()
 }
 
+/// Reduces a title to its matchable stub so re-uploads compare equal:
+/// `"Khat - Navjot Ahuja"` and `"KHAT (Lyrics)"` both become `"khat"`.
+/// Cuts at the first separator that isn't at position 0 — a title that
+/// STARTS with a paren (e.g. `"(Untitled)"`) keeps it.
+pub fn normalize_title_stub(title: &str) -> String {
+    const SEPS: &[&str] = &[
+        " - ",
+        " | ",
+        " (",
+        " [",
+        " ft ",
+        " ft.",
+        " feat ",
+        " feat.",
+        " featuring ",
+    ];
+    let lower = title.to_lowercase();
+    let mut end = lower.len();
+    for sep in SEPS {
+        if let Some(i) = lower.find(sep)
+            && i > 0
+            && i < end
+        {
+            end = i;
+        }
+    }
+    lower[..end]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One remembered play: exact key plus fuzzy match surfaces. Radio supply is
+/// infinite, so false positives (skipping a legit same-named song) cost
+/// nothing while false negatives (audible repeats) cost everything — err
+/// aggressive.
+#[derive(Clone, Debug)]
+pub struct HistoryEntry {
+    pub key: String,
+    pub title_stub: String,
+    pub author_norm: String,
+}
+
+impl HistoryEntry {
+    pub fn new(uri: &str, title: &str, author: &str) -> Self {
+        Self {
+            key: track_key(uri),
+            title_stub: normalize_title_stub(title),
+            author_norm: normalize_author(author),
+        }
+    }
+}
+
 /// Dedup key for a track: the videoId when it's YouTube, else the full URI.
 pub fn track_key(uri: &str) -> String {
     extract_video_id(uri).unwrap_or_else(|| uri.to_string())
@@ -188,9 +241,12 @@ pub fn autoplay_pick(
     candidates: &[MixCandidate],
     seed_video_id: &str,
     seed_author_norm: &str,
-    history: &VecDeque<String>,
-    queued_keys: &[String],
+    history: &VecDeque<HistoryEntry>,
+    queued: &[HistoryEntry],
 ) -> Option<usize> {
+    // Cheap exact-match sets first.
+    let hist_keys: Vec<&str> = history.iter().map(|h| h.key.as_str()).collect();
+    let queued_keys: Vec<&str> = queued.iter().map(|h| h.key.as_str()).collect();
     candidates.iter().position(|c| {
         if c.video_id.is_empty() || c.video_id == seed_video_id {
             return false; // the seed itself (mixes list it first)
@@ -211,11 +267,17 @@ pub fn autoplay_pick(
             return false; // same artist as the last song
         }
         let key = track_key(&c.webpage_url);
-        if history.contains(&key) {
-            return false; // played recently
+        if hist_keys.contains(&key.as_str()) || queued_keys.contains(&key.as_str()) {
+            return false; // exact replay / already queued
         }
-        if queued_keys.contains(&key) {
-            return false; // already waiting in the queue
+        // Re-upload twin: different videoId, same song ("khat" vs
+        // "Khat - Navjot Ahuja"). Empty stubs never match.
+        let stub = normalize_title_stub(&c.title);
+        if !stub.is_empty()
+            && (history.iter().any(|h| h.title_stub == stub)
+                || queued.iter().any(|h| h.title_stub == stub))
+        {
+            return false;
         }
         true
     })
@@ -435,10 +497,10 @@ pub struct GuildState {
     /// Bounds rejoin flapping (e.g. an admin repeatedly kicking the bot) to
     /// ~once a minute. Deliberately preserved across state resets.
     pub stay_last_rejoin: Option<std::time::Instant>,
-    /// URIs (or YouTube videoIds) of recently started tracks, oldest first.
-    /// Autoplay consults this so the radio never repeats itself; capped so a
-    /// 24/7 radio can't grow memory without bound.
-    pub autoplay_history: VecDeque<String>,
+    /// Recently started tracks, oldest first. Autoplay consults this so the
+    /// radio never repeats itself; capped so a 24/7 radio can't grow memory
+    /// without bound.
+    pub autoplay_history: VecDeque<HistoryEntry>,
     /// True when the current track plays from an in-memory Opus cache
     /// (set after the first seek) — native seeks are instant on it.
     pub current_is_cached: bool,
@@ -811,18 +873,38 @@ mod tests {
     fn autoplay_pick_applies_every_filter() {
         let seed = "SEEDSEED111";
         let seed_author = normalize_author("Coldplay");
-        let history: VecDeque<String> =
-            vec!["PLAYEDPLAY1".to_string()].into_iter().collect();
-        let queued = vec!["QUEUEDQUEU1".to_string()];
+        fn hist(uri: &str, title: &str, author: &str) -> HistoryEntry {
+            HistoryEntry::new(uri, title, author)
+        }
+        let history: VecDeque<HistoryEntry> = vec![hist(
+            "https://www.youtube.com/watch?v=PLAYEDPLAY1",
+            "Old Song",
+            "Someone",
+        )]
+        .into_iter()
+        .collect();
+        let queued = vec![hist(
+            "https://www.youtube.com/watch?v=QUEUEDQUEU1",
+            "Waiting Song",
+            "Someone",
+        )];
 
-        // Index 0: the seed itself. 1: same artist. 2: played. 3: queued.
-        // 4: live. 5: too long. 6: unknown length. 7: empty title.
-        // 8: first clean winner.
+        // Index 0: the seed itself. 1: same artist. 2: played (exact id).
+        // 3: queued. 4: re-upload twin (different id, same title stub).
+        // 5: live. 6: too long. 7: unknown length. 8: empty title.
+        // 9: first clean winner.
         let cands = vec![
             mix_cand(seed, "Seed Song", "Coldplay", Some(200), false),
             mix_cand("AAAAAAAAAAA", "Other", "Coldplay - Topic", Some(200), false),
-            mix_cand("PLAYEDPLAY1", "Old", "Someone", Some(200), false),
-            mix_cand("QUEUEDQUEU1", "Waiting", "Someone", Some(200), false),
+            mix_cand("PLAYEDPLAY1", "Old Song", "Someone", Some(200), false),
+            mix_cand("QUEUEDQUEU1", "Waiting Song", "Someone", Some(200), false),
+            mix_cand(
+                "GGGGGGGGGGG",
+                "Old Song - Random Uploader",
+                "Uploader",
+                Some(210),
+                false
+            ),
             mix_cand("BBBBBBBBBBB", "Live", "Someone", Some(200), true),
             mix_cand("CCCCCCCCCCC", "Epic 3h mix", "Someone", Some(3 * 3600), false),
             mix_cand("DDDDDDDDDDD", "Mystery", "Someone", None, false),
@@ -831,8 +913,25 @@ mod tests {
         ];
         assert_eq!(
             autoplay_pick(&cands, seed, &seed_author, &history, &queued),
-            Some(8)
+            Some(9)
         );
+    }
+
+    #[test]
+    fn title_stubs_catch_reuploads() {
+        assert_eq!(normalize_title_stub("Khat"), "khat");
+        assert_eq!(normalize_title_stub("Khat - Navjot Ahuja"), "khat");
+        assert_eq!(normalize_title_stub("KHAT (Lyrics)"), "khat");
+        assert_eq!(
+            normalize_title_stub("Arz Kiya Hai | Coke Studio Bharat"),
+            "arz kiya hai"
+        );
+        assert_eq!(
+            normalize_title_stub("Like Him (feat. Lola Young)"),
+            "like him"
+        );
+        assert_eq!(normalize_title_stub("(Untitled)"), "(untitled)");
+        assert_eq!(normalize_title_stub("Higher Power"), "higher power");
     }
 
     #[test]

@@ -572,7 +572,7 @@ async fn autoplay_next(
     core: &Arc<Core>,
     guild_id: GuildId,
     seed: &Track,
-    history: VecDeque<String>,
+    history: VecDeque<crate::state::HistoryEntry>,
 ) -> Option<crate::sources::ResolvedMeta> {
     use crate::state::{autoplay_pick, extract_video_id, normalize_author};
 
@@ -770,9 +770,9 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
     // Remember every started track (manual or auto) for autoplay
     // repeat-avoidance. Bounded so a 24/7 radio can't grow memory.
     {
-        let key = crate::state::track_key(&track.uri);
-        if st.autoplay_history.back() != Some(&key) {
-            st.autoplay_history.push_back(key);
+        let entry = crate::state::HistoryEntry::new(&track.uri, &track.title, &track.author);
+        if st.autoplay_history.back().map(|h| &h.key) != Some(&entry.key) {
+            st.autoplay_history.push_back(entry);
             while st.autoplay_history.len() > crate::state::AUTOPLAY_HISTORY_CAP {
                 st.autoplay_history.pop_front();
             }
