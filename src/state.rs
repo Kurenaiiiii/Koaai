@@ -127,8 +127,10 @@ pub const AUTOPLAY_HISTORY_CAP: usize = 100;
 /// Autoplay never picks livestreams, unknown-length entries, or anything
 /// longer than this (mixes love 1-hour compilations).
 pub const AUTOPLAY_MAX_SECS: u64 = 20 * 60;
-/// How many mix entries to consider per trigger.
-pub const AUTOPLAY_MIX_LIMIT: u32 = 25;
+/// How many mix entries to consider per trigger. Mixes hold ~50 unique
+/// videos; fetching the whole thing maximizes the survivor pool so the
+/// random roll actually has room to vary (tiny pools = same chain).
+pub const AUTOPLAY_MIX_LIMIT: u32 = 50;
 
 /// Extracts the 11-char YouTube videoId from a watch URL. None for anything
 /// else (lazy `ytsearch1:` queries, SoundCloud/file URLs, ...).
@@ -260,19 +262,25 @@ pub fn audio_upgrade_ok(
 
 /// Tiny non-crypto RNG without adding a `rand` dependency. Radio shuffling
 /// only — uniformity past "feels random across 5 songs" doesn't matter.
+/// A process-wide counter is folded in so rapid successive calls can never
+/// share an input (kills any same-nanosecond doubt for good).
 pub fn rand_below(bound: usize) -> usize {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(0);
     if bound <= 1 {
         return 0;
     }
     let mut h = RandomState::new().build_hasher();
-    h.write_u64(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() as u64)
-            .unwrap_or(0),
-    );
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let salt = CTR
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_mul(0x9E3779B97F4A7C15);
+    h.write_u64(nanos ^ salt);
     std::hint::black_box(&mut h);
     (h.finish() % bound as u64) as usize
 }

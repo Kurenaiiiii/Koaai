@@ -124,8 +124,19 @@ impl serenity::EventHandler for Handler {
                     player::rejoin_stay_channels(&self.core).await;
                 }
             }
+            // NOTE: serenity awaits dispatch INLINE in the shard loop, so
+            // anything slow here starves every other gateway event behind it
+            // (button presses expire past their 3s ack window and die with
+            // "interaction failed"). Voice updates sleep up to 10s and track
+            // ends can fetch for seconds — spawn everything, never block.
             VoiceStateUpdate { old: Some(old), new, .. } => {
-                player::handle_voice_state_update(ctx, &self.core, old, new).await;
+                let ctx = ctx.clone();
+                let core = self.core.clone();
+                let old = old.clone();
+                let new = new.clone();
+                tokio::spawn(async move {
+                    player::handle_voice_state_update(&ctx, &core, &old, &new).await;
+                });
             }
             InteractionCreate { interaction, .. } => {
                 match interaction {
@@ -133,17 +144,30 @@ impl serenity::EventHandler for Handler {
                     // report buttons/selects first, then music/help router;
                     // modals are always report.
                     serenity::model::application::Interaction::Component(comp) => {
-                        let handled = commands::report::component(&self.core, comp).await;
-                        if !handled {
-                            let _ = ui::router::component(&self.core, ctx, comp).await;
-                        }
+                        let comp = comp.clone();
+                        let core = self.core.clone();
+                        let ctx = ctx.clone();
+                        tokio::spawn(async move {
+                            let handled =
+                                commands::report::component(&core, &comp).await;
+                            if !handled {
+                                let _ =
+                                    ui::router::component(&core, &ctx, &comp).await;
+                            }
+                        });
                     }
                     serenity::model::application::Interaction::Modal(m) => {
-                        let guild_name = m
-                            .guild_id
-                            .and_then(|g| ctx.cache.guild(g))
-                            .map(|g| g.name.clone().into_string());
-                        let _ = commands::report::modal(&self.core, guild_name, m).await;
+                        let m = m.clone();
+                        let core = self.core.clone();
+                        let ctx = ctx.clone();
+                        tokio::spawn(async move {
+                            let guild_name = m
+                                .guild_id
+                                .and_then(|g| ctx.cache.guild(g))
+                                .map(|g| g.name.clone().into_string());
+                            let _ =
+                                commands::report::modal(&core, guild_name, &m).await;
+                        });
                     }
                     _ => {}
                 }

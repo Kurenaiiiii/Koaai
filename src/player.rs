@@ -618,6 +618,8 @@ async fn autoplay_next(
     //    at trigger time, so this is just future-proofing).
     let seed_author = normalize_author(&seed.author);
     let picks = autoplay_pick(&entries, &seed_id, &seed_author, &history, &[]);
+    log_info!("autoplay", "guild {guild_id}: mix gave {} entries, {} survivors",
+        entries.len(), picks.len());
     // Random among the first few survivors (python did random-of-5): the same
     // seed must NOT produce the same chain every session.
     let c = if picks.is_empty() {
