@@ -754,7 +754,7 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
                 && !stopped
             {
                 st.queue
-                    .push_back(Track::from_resolved(meta.into(), "Autoplay 🎧"));
+                    .push_back(Track::from_resolved(meta.into(), "System / Autoplay"));
             }
         }
     }

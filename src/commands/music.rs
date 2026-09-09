@@ -289,6 +289,10 @@ pub async fn stop(ctx: Context<'_>) -> Result<(), Error> {
     let core = ctx.data().core.clone();
     vc_guard(&ctx).await?;
 
+    // Stopping ends the session — autoplay goes off with it (old bot did
+    // exactly this; radio never resurrects after a stop).
+    let had_autoplay = core.autoplay_enabled(guild_id).await;
+    core.clear_autoplay(guild_id).await;
     let handle = {
         let mut st = core.registry.get(guild_id);
         st.request_stop();
@@ -307,6 +311,11 @@ pub async fn stop(ctx: Context<'_>) -> Result<(), Error> {
     }
     memory::trim();
 
+    let auto_note = if had_autoplay {
+        "\n-# Autoplay was on — turned it off."
+    } else {
+        ""
+    };
     if core.stay_channel(guild_id).await.is_some() {
         // Idle in the stay channel: no auto-leave/return timer should be
         // pending, but make sure none survived from an earlier flow.
@@ -323,7 +332,7 @@ pub async fn stop(ctx: Context<'_>) -> Result<(), Error> {
         ok(
             ctx,
             &format!(
-                "{} Stopped. 24/7 mode is active, so I'm staying in voice.\n-# Queue cleared • Use `play` to resume, or `leave` to release me.",
+                "{0} Stopped. 24/7 mode is active, so I'm staying in voice.\n-# Queue cleared • Use `play` to resume, or `leave` to release me.{auto_note}",
                 config::emojis::STOP
             ),
         )
@@ -344,7 +353,7 @@ pub async fn stop(ctx: Context<'_>) -> Result<(), Error> {
         ok(
             ctx,
             &format!(
-                "{} Stopped and left the channel.\n-# Queue cleared • Loop reset to off.",
+                "{0} Stopped and left the channel.\n-# Queue cleared • Loop reset to off.{auto_note}",
                 config::emojis::STOP
             ),
         )
@@ -605,11 +614,15 @@ pub async fn loop_mode(ctx: Context<'_>) -> Result<(), Error> {
     .await
 }
 
-/// Keep the radio going: similar tracks auto-play after the queue runs out
+/// Radio mode: similar tracks after the queue (session-only, needs VC).
 #[poise::command(slash_command, prefix_command, aliases("ap"), guild_only)]
 pub async fn autoplay(ctx: Context<'_>) -> Result<(), Error> {
     let guild_id = ctx.guild_id().expect("guild only");
     let core = ctx.data().core.clone();
+
+    if core.voice.get(guild_id).is_none() {
+        return err(ctx, "Not connected.").await;
+    }
 
     if !core.cfg.sources.youtube_enabled {
         return err(
@@ -624,8 +637,7 @@ pub async fn autoplay(ctx: Context<'_>) -> Result<(), Error> {
         ok(
             ctx,
             &format!(
-                "{}  Autoplay Off.\n-# The queue plays out normally from here.",
-                config::emojis::PLAY
+                "📻  Autoplay **disabled** ❌\n-# The queue plays out normally from here.",
             ),
         )
         .await
@@ -634,8 +646,7 @@ pub async fn autoplay(ctx: Context<'_>) -> Result<(), Error> {
         ok(
             ctx,
             &format!(
-                "{}  Autoplay On — radio mode armed.\n-# Similar tracks keep playing after your queue runs out. No repeats, never the same artist twice in a row. Loop modes pause it while on. It stays armed through `stop`/`clear`; `leave` turns it off — or toggle again.",
-                config::emojis::PLAY
+                "📻  Autoplay **enabled** ✅\n-# Similar tracks keep playing after your queue runs out. No repeats, never the same artist twice in a row. Loop modes pause it while on. `stop` turns it off — or toggle again.",
             ),
         )
         .await

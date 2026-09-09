@@ -46,12 +46,10 @@ impl Core {
                 Some((GuildId::new(g.parse().ok()?), ChannelId::new(c.parse().ok()?)))
             })
             .collect();
-        let autoplay = db
-            .autoplay_guilds()
-            .map_err(|e| format!("loading autoplay: {e}"))?
-            .into_iter()
-            .filter_map(|g| g.parse::<u64>().ok().map(GuildId::new))
-            .collect();
+        // Autoplay is session-only (like the old python bot): in-memory,
+        // default off, dies on restart. Survives GC pruning by living here
+        // instead of in GuildState.
+        let autoplay = HashSet::new();
 
         Ok(Arc::new(Self {
             registry: {
@@ -117,12 +115,10 @@ impl Core {
     }
 
     pub async fn set_autoplay(&self, guild_id: GuildId) {
-        let _ = self.db.set_autoplay(&guild_id.to_string());
         self.autoplay.write().await.insert(guild_id);
     }
 
     pub async fn clear_autoplay(&self, guild_id: GuildId) {
-        let _ = self.db.delete_autoplay(&guild_id.to_string());
         self.autoplay.write().await.remove(&guild_id);
     }
 

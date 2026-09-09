@@ -529,6 +529,14 @@ pub mod router {
                 refresh_np(core, guild_id).await;
             }
             "stop" => {
+                // Stopping ends the session — autoplay goes off with it.
+                let had_autoplay = core.autoplay_enabled(guild_id).await;
+                core.clear_autoplay(guild_id).await;
+                let auto_note = if had_autoplay {
+                    "\n-# Autoplay was on — turned it off."
+                } else {
+                    ""
+                };
                 let handle = {
                     let mut st = core.registry.get(guild_id);
                     st.request_stop();
@@ -562,7 +570,7 @@ pub mod router {
                         core,
                         interaction,
                         format!(
-                            "{}  Stopped. 24/7 mode is active, so I'm staying in voice.\n-# Queue cleared • Use `play` to resume, or `leave` to release me.",
+                            "{0}  Stopped. 24/7 mode is active, so I'm staying in voice.\n-# Queue cleared • Use `play` to resume, or `leave` to release me.{auto_note}",
                             config::emojis::STOP
                         ),
                     )
@@ -580,7 +588,12 @@ pub mod router {
                         }
                     }
                     memory::trim();
-                    ephemeral(core, interaction, "Stopped and left.".to_string()).await;
+                    ephemeral(
+                        core,
+                        interaction,
+                        format!("Stopped and left.{auto_note}"),
+                    )
+                    .await;
                 }
             }
             _ => {}
