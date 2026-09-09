@@ -339,15 +339,13 @@ async fn main() {
                         .map(|(t, f)| format!(" cgroup={t}MB(file={f}MB)"))
                         .unwrap_or_default();
                     if nchild > 0 {
-                        log_info!(
-                            "gc",
-                            "mem self={self_mb}MB children={child_mb}MB ({nchild}: {names}){cg} guilds={}",
+                        tracing::debug!(
+                            "gc mem self={self_mb}MB children={child_mb}MB ({nchild}: {names}){cg} guilds={}",
                             core2.registry.len()
                         );
                     } else {
-                        log_info!(
-                            "gc",
-                            "mem self={self_mb}MB children=0MB{cg} guilds={}",
+                        tracing::debug!(
+                            "gc mem self={self_mb}MB children=0MB{cg} guilds={}",
                             core2.registry.len()
                         );
                     }
