@@ -208,6 +208,39 @@ pub struct HistoryEntry {
     pub author_norm: String,
 }
 
+/// Title markers of non-original uploads. Radio plays originals only —
+/// covers, mashups, slowed/reverb edits and friends never get picked.
+const COVER_MARKERS: &[&str] = &[
+    "cover", "mashup", "mash up", "mash-up", "unplugged", "acoustic", "remix",
+    "slowed", "sped up", "speed up", "spedup", "reverb", "nightcore",
+    "8d audio", "lofi", "lo-fi", "karaoke", "instrumental", "ringtone",
+    "tiktok",
+];
+
+pub fn is_cover_like(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    COVER_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Tiny non-crypto RNG without adding a `rand` dependency. Radio shuffling
+/// only — uniformity past "feels random across 5 songs" doesn't matter.
+pub fn rand_below(bound: usize) -> usize {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    if bound <= 1 {
+        return 0;
+    }
+    let mut h = RandomState::new().build_hasher();
+    h.write_u64(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64)
+            .unwrap_or(0),
+    );
+    std::hint::black_box(&mut h);
+    (h.finish() % bound as u64) as usize
+}
+
 impl HistoryEntry {
     pub fn new(uri: &str, title: &str, author: &str) -> Self {
         Self {
@@ -235,52 +268,61 @@ pub struct MixCandidate {
     pub is_live: bool,
 }
 
-/// Picks the first mix entry that survives every autoplay filter.
-/// Returns the index into `candidates`. Pure logic — fully unit-tested.
+/// Collects mix entry indices that survive every autoplay filter, in mix
+/// order. The caller randomizes among the first few — a deterministic
+/// first-match would play the SAME chain every time a seed repeats.
+/// Pure logic — fully unit-tested.
 pub fn autoplay_pick(
     candidates: &[MixCandidate],
     seed_video_id: &str,
     seed_author_norm: &str,
     history: &VecDeque<HistoryEntry>,
     queued: &[HistoryEntry],
-) -> Option<usize> {
+) -> Vec<usize> {
     // Cheap exact-match sets first.
     let hist_keys: Vec<&str> = history.iter().map(|h| h.key.as_str()).collect();
     let queued_keys: Vec<&str> = queued.iter().map(|h| h.key.as_str()).collect();
-    candidates.iter().position(|c| {
-        if c.video_id.is_empty() || c.video_id == seed_video_id {
-            return false; // the seed itself (mixes list it first)
-        }
-        if c.title.trim().is_empty() {
-            return false;
-        }
-        if c.is_live {
-            return false;
-        }
-        match c.duration_secs {
-            Some(d) if d > 0 && d <= AUTOPLAY_MAX_SECS => {}
-            _ => return false, // unknown length or a 2-hour compilation
-        }
-        if !seed_author_norm.is_empty()
-            && normalize_author(&c.author) == seed_author_norm
-        {
-            return false; // same artist as the last song
-        }
-        let key = track_key(&c.webpage_url);
-        if hist_keys.contains(&key.as_str()) || queued_keys.contains(&key.as_str()) {
-            return false; // exact replay / already queued
-        }
-        // Re-upload twin: different videoId, same song ("khat" vs
-        // "Khat - Navjot Ahuja"). Empty stubs never match.
-        let stub = normalize_title_stub(&c.title);
-        if !stub.is_empty()
-            && (history.iter().any(|h| h.title_stub == stub)
-                || queued.iter().any(|h| h.title_stub == stub))
-        {
-            return false;
-        }
-        true
-    })
+    candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            if c.video_id.is_empty() || c.video_id == seed_video_id {
+                return None; // the seed itself (mixes list it first)
+            }
+            if c.title.trim().is_empty() {
+                return None;
+            }
+            if is_cover_like(&c.title) {
+                return None; // covers, mashups, slowed edits — originals only
+            }
+            if c.is_live {
+                return None;
+            }
+            match c.duration_secs {
+                Some(d) if d > 0 && d <= AUTOPLAY_MAX_SECS => {}
+                _ => return None, // unknown length or a 2-hour compilation
+            }
+            if !seed_author_norm.is_empty()
+                && normalize_author(&c.author) == seed_author_norm
+            {
+                return None; // same artist as the last song
+            }
+            let key = track_key(&c.webpage_url);
+            if hist_keys.contains(&key.as_str()) || queued_keys.contains(&key.as_str()) {
+                return None; // exact replay / already queued
+            }
+            // Re-upload twin: different videoId, same song ("khat" vs
+            // "Khat - Navjot Ahuja"). Empty stubs never match.
+            let stub = normalize_title_stub(&c.title);
+            if !stub.is_empty()
+                && (history.iter().any(|h| h.title_stub == stub)
+                    || queued.iter().any(|h| h.title_stub == stub))
+            {
+                return None;
+            }
+            Some(i)
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -891,8 +933,8 @@ mod tests {
 
         // Index 0: the seed itself. 1: same artist. 2: played (exact id).
         // 3: queued. 4: re-upload twin (different id, same title stub).
-        // 5: live. 6: too long. 7: unknown length. 8: empty title.
-        // 9: first clean winner.
+        // 5-6: cover + mashup. 7: live. 8: too long. 9: unknown length.
+        // 10: empty title. 11-12: clean winners, in mix order.
         let cands = vec![
             mix_cand(seed, "Seed Song", "Coldplay", Some(200), false),
             mix_cand("AAAAAAAAAAA", "Other", "Coldplay - Topic", Some(200), false),
@@ -905,15 +947,18 @@ mod tests {
                 Some(210),
                 false
             ),
+            mix_cand("HHHHHHHHHHH", "Brand New (cover)", "Singer", Some(200), false),
+            mix_cand("IIIIIIIIIII", "Old Song Mega Mashup", "DJ X", Some(200), false),
             mix_cand("BBBBBBBBBBB", "Live", "Someone", Some(200), true),
             mix_cand("CCCCCCCCCCC", "Epic 3h mix", "Someone", Some(3 * 3600), false),
             mix_cand("DDDDDDDDDDD", "Mystery", "Someone", None, false),
             mix_cand("EEEEEEEEEEE", "   ", "Someone", Some(200), false),
             mix_cand("FFFFFFFFFFF", "Fresh Track", "Someone Else", Some(180), false),
+            mix_cand("JJJJJJJJJJJ", "Another One", "Third Party", Some(190), false),
         ];
         assert_eq!(
             autoplay_pick(&cands, seed, &seed_author, &history, &queued),
-            Some(9)
+            vec![11, 12]
         );
     }
 
@@ -935,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn autoplay_pick_returns_none_when_everything_filtered() {
+    fn autoplay_pick_returns_empty_when_everything_filtered() {
         let cands = vec![mix_cand(
             "AAAAAAAAAAA",
             "Same Artist",
@@ -944,15 +989,41 @@ mod tests {
             false,
         )];
         let history = VecDeque::new();
-        let queued = vec![];
-        assert_eq!(
-            autoplay_pick(&cands, "SEEDSEED111", &normalize_author("coldplay"), &history, &queued),
-            None
-        );
-        assert_eq!(
-            autoplay_pick(&[], "SEEDSEED111", &normalize_author("x"), &history, &queued),
-            None
-        );
+        let queued: Vec<HistoryEntry> = vec![];
+        assert!(autoplay_pick(&cands, "SEEDSEED111", &normalize_author("coldplay"), &history, &queued).is_empty());
+        assert!(autoplay_pick(&[], "SEEDSEED111", &normalize_author("x"), &history, &queued).is_empty());
+    }
+
+    #[test]
+    fn cover_blocklist() {
+        for t in [
+            "Khat (cover)",
+            "Best Mashup 2024",
+            "Song slowed + reverb",
+            "Track (8d audio)",
+            "Hit Lofi Remix",
+            "Unplugged Version",
+            "Dance Karaoke",
+        ] {
+            assert!(is_cover_like(t), "{t} should be blocked");
+        }
+        for t in [
+            "Khat",
+            "Arz Kiya Hai",
+            "Higher Power",
+            "Dooron Dooron (Live from The Voice Notes Concert)",
+        ] {
+            assert!(!is_cover_like(t), "{t} should pass");
+        }
+    }
+
+    #[test]
+    fn rand_below_stays_in_bounds() {
+        assert_eq!(rand_below(0), 0);
+        assert_eq!(rand_below(1), 0);
+        for _ in 0..200 {
+            assert!(rand_below(5) < 5);
+        }
     }
 
     #[test]

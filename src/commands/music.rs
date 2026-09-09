@@ -172,20 +172,19 @@ pub async fn play(
                     st.queue.push_back(track.clone());
                     st.queue.len()
                 };
+                let title_md = crate::ui::md_title(&track);
                 let body = if was_idle {
                     format!(
-                        "## {} Now starting\n**[{}]({})**\n-# Artist: **{}** • Duration: `{}`\n-# Control playback with the buttons under the NP card.",
+                        "## {} Now starting\n**[{title_md}]({})**\n-# Artist: **{}** • Duration: `{}`\n-# Control playback with the buttons under the NP card.",
                         config::emojis::PLAY,
-                        track.title.replace('[', "(").replace(']', ")"),
                         track.link_for_ui(),
                         track.author,
                         track.duration_display()
                     )
                 } else {
                     format!(
-                        "## {} Added to Queue\n**[{}]({})**\n-# Artist: **{}** • Duration: `{}` • Position: `#{}`\n-# It plays automatically when the current track ends.",
+                        "## {} Added to Queue\n**[{title_md}]({})**\n-# Artist: **{}** • Duration: `{}` • Position: `#{}`\n-# It plays automatically when the current track ends.",
                         player_source_emoji(&track),
-                        track.title.replace('[', "(").replace(']', ")"),
                         track.link_for_ui(),
                         track.author,
                         track.duration_display(),

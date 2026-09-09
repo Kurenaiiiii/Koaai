@@ -617,8 +617,18 @@ async fn autoplay_next(
     //    no live streams, no marathons, nothing already queued (queue is empty
     //    at trigger time, so this is just future-proofing).
     let seed_author = normalize_author(&seed.author);
-    let idx = autoplay_pick(&entries, &seed_id, &seed_author, &history, &[]);
-    let c = match idx.map(|i| &entries[i]) {
+    let picks = autoplay_pick(&entries, &seed_id, &seed_author, &history, &[]);
+    // Random among the first few survivors (python did random-of-5): the same
+    // seed must NOT produce the same chain every session.
+    let c = if picks.is_empty() {
+        None
+    } else {
+        let n = picks.len().min(5);
+        picks
+            .get(crate::state::rand_below(n))
+            .map(|i| &entries[*i])
+    };
+    let c = match c {
         Some(c) => c,
         None => {
             autoplay_disable(core, guild_id, "mix exhausted (repeats/artist/live/long)").await;

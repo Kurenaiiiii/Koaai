@@ -133,8 +133,21 @@ pub fn player_rows(
     ]
 }
 
-fn md_title(t: &Track) -> String {
-    t.title.replace('[', "(").replace(']', ")")
+/// Display titles: brackets neutralized (they break markdown links) and
+/// capped — pre-2020 uploads love 100-char titles and cards shouldn't scroll.
+pub fn md_title(t: &Track) -> String {
+    md_title_str(&t.title)
+}
+
+const TITLE_DISPLAY_MAX: usize = 45;
+
+pub fn md_title_str(title: &str) -> String {
+    let clean = title.replace('[', "(").replace(']', ")");
+    if clean.chars().count() <= TITLE_DISPLAY_MAX {
+        return clean;
+    }
+    let cut: String = clean.chars().take(TITLE_DISPLAY_MAX).collect();
+    format!("{}…", cut.trim_end())
 }
 
 pub fn now_playing_components(
