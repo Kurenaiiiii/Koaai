@@ -687,7 +687,12 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
     if st.queue.is_empty() {
         let seed = ended.clone();
         let history = st.autoplay_history.clone();
-        let want_auto = seed.is_some() && core.autoplay_enabled(guild_id).await;
+        // `playing` must still be true: it distinguishes a live radio moment
+        // (natural end, skip) from dead ones — prev-pressed-while-idle, or a
+        // queue drained purely by track errors (radio must stay quiet during
+        // an outage; the circuit breaker agrees).
+        let want_auto =
+            seed.is_some() && st.playing && core.autoplay_enabled(guild_id).await;
         drop(st);
         let mut auto_meta = None;
         // want_auto implies seed.is_some(), but never unwrap in event code.

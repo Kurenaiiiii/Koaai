@@ -84,52 +84,53 @@ fn e(s: &'static str) -> ReactionType {
     })
 }
 
-/// Autoplay toggle row (label carries the state, like the old bot's NP card).
-pub fn autoplay_row(autoplay_on: bool, guild_id: u64) -> CreateActionRow<'static> {
-    CreateActionRow::Buttons(std::borrow::Cow::Owned(vec![
-        CreateButton::new(format!("koaai:ap:{guild_id}"))
-            .label(if autoplay_on {
-                "📻 AP: On"
-            } else {
-                "📻 Autoplay"
-            })
-            .style(if autoplay_on {
-                ButtonStyle::Success
-            } else {
-                ButtonStyle::Secondary
-            }),
-    ]))
-}
-
-pub fn player_row(state: &GuildState, guild_id: u64) -> CreateActionRow<'static> {
+/// NP transport rows: 3 transport buttons up top, loop/autoplay/stop below.
+/// Autoplay is emoji-only (custom bot emoji); its on/off state shows through
+/// the button color, like loop does.
+pub fn player_rows(
+    state: &GuildState,
+    guild_id: u64,
+    autoplay_on: bool,
+) -> Vec<CreateActionRow<'static>> {
     let paused = state.paused;
     let lm = state.loop_mode;
 
-    CreateActionRow::Buttons(std::borrow::Cow::Owned(vec![
-        CreateButton::new(format!("koaai:prev:{guild_id}"))
-            .emoji(e(config::emojis::BACK))
-            .style(ButtonStyle::Secondary),
-        CreateButton::new(format!("koaai:pp:{guild_id}"))
-            .emoji(e(if paused {
-                config::emojis::PLAY
-            } else {
-                config::emojis::PAUSE
-            }))
-            .style(ButtonStyle::Primary),
-        CreateButton::new(format!("koaai:skip:{guild_id}"))
-            .emoji(e(config::emojis::SKIP))
-            .style(ButtonStyle::Secondary),
-        CreateButton::new(format!("koaai:loop:{guild_id}"))
-            .emoji(e(config::emojis::LOOP))
-            .style(if lm != LoopMode::Off {
-                ButtonStyle::Primary
-            } else {
-                ButtonStyle::Secondary
-            }),
-        CreateButton::new(format!("koaai:stop:{guild_id}"))
-            .emoji(e(config::emojis::STOP))
-            .style(ButtonStyle::Danger),
-    ]))
+    vec![
+        CreateActionRow::Buttons(std::borrow::Cow::Owned(vec![
+            CreateButton::new(format!("koaai:prev:{guild_id}"))
+                .emoji(e(config::emojis::BACK))
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("koaai:pp:{guild_id}"))
+                .emoji(e(if paused {
+                    config::emojis::PLAY
+                } else {
+                    config::emojis::PAUSE
+                }))
+                .style(ButtonStyle::Primary),
+            CreateButton::new(format!("koaai:skip:{guild_id}"))
+                .emoji(e(config::emojis::SKIP))
+                .style(ButtonStyle::Secondary),
+        ])),
+        CreateActionRow::Buttons(std::borrow::Cow::Owned(vec![
+            CreateButton::new(format!("koaai:loop:{guild_id}"))
+                .emoji(e(config::emojis::LOOP))
+                .style(if lm != LoopMode::Off {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Secondary
+                }),
+            CreateButton::new(format!("koaai:ap:{guild_id}"))
+                .emoji(e(config::emojis::SHUFFLE))
+                .style(if autoplay_on {
+                    ButtonStyle::Success
+                } else {
+                    ButtonStyle::Secondary
+                }),
+            CreateButton::new(format!("koaai:stop:{guild_id}"))
+                .emoji(e(config::emojis::STOP))
+                .style(ButtonStyle::Danger),
+        ])),
+    ]
 }
 
 fn md_title(t: &Track) -> String {
@@ -166,11 +167,9 @@ pub fn now_playing_components(
     } else {
         inner.push(text(desc));
     }
-    inner.push(CreateContainerComponent::ActionRow(player_row(st, guild_id)));
-    inner.push(CreateContainerComponent::ActionRow(autoplay_row(
-        autoplay_on,
-        guild_id,
-    )));
+    for row in player_rows(st, guild_id, autoplay_on) {
+        inner.push(CreateContainerComponent::ActionRow(row));
+    }
 
     container(inner, config::C_NP)
 }
@@ -527,7 +526,8 @@ pub mod router {
                 let handle = {
                     let mut st = core.registry.get(guild_id);
                     st.request_stop();
-                    st.playing = false;
+                    // NOTE: `playing` stays true on purpose (see skip command)
+                    // so autoplay can tell a skip apart from a stop.
                     st.previous = st.current.take();
                     st.current_is_cached = false;
                     st.break_circuit();

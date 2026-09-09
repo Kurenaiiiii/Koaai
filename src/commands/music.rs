@@ -260,10 +260,12 @@ pub async fn skip(
             st.queue.shrink_to_fit();
         }
         st.request_stop();
-        st.playing = false;
+        // NOTE: `playing` stays true on purpose. The spawned play_next must
+        // not mistake this skip for a user stop (both leave current=None and
+        // an empty queue) — otherwise autoplay's re-verify would discard the
+        // radio fill every time. play_next/conclude reset it as needed.
         st.previous = st.current.take();
         st.current_is_cached = false;
-        st.break_circuit();
         st.current_handle.take()
     };
     if let Some(h) = handle {
