@@ -120,6 +120,107 @@ pub fn filename_from_url(uri: &str) -> Option<String> {
     if pretty.is_empty() { None } else { Some(pretty) }
 }
 
+// ── Autoplay helpers ─────────────────────────────────────────────────────
+
+/// How many started tracks are remembered for repeat-avoidance per guild.
+pub const AUTOPLAY_HISTORY_CAP: usize = 100;
+/// Autoplay never picks livestreams, unknown-length entries, or anything
+/// longer than this (mixes love 1-hour compilations).
+pub const AUTOPLAY_MAX_SECS: u64 = 20 * 60;
+/// How many mix entries to consider per trigger.
+pub const AUTOPLAY_MIX_LIMIT: u32 = 25;
+
+/// Extracts the 11-char YouTube videoId from a watch URL. None for anything
+/// else (lazy `ytsearch1:` queries, SoundCloud/file URLs, ...).
+pub fn extract_video_id(uri: &str) -> Option<String> {
+    let url = Url::parse(uri).ok()?;
+    let host = url.host_str().unwrap_or_default();
+    if host.ends_with("youtube.com") {
+        let id = url
+            .query_pairs()
+            .find(|(k, _)| k == "v")
+            .map(|(_, v)| v.into_owned())?;
+        return (id.len() == 11).then_some(id);
+    }
+    if host == "youtu.be" {
+        let id = url.path().trim_matches('/').to_string();
+        return (id.len() == 11).then_some(id);
+    }
+    None
+}
+
+/// Normalizes an author name for the never-same-artist-twice-in-a-row rule.
+/// Catches the big one: YouTube's auto-generated `"Coldplay - Topic"`
+/// channels vs plain `"Coldplay"`. Best-effort, not a musicologist.
+pub fn normalize_author(author: &str) -> String {
+    let collapsed = author
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    collapsed
+        .strip_suffix("- topic")
+        .map(str::trim)
+        .unwrap_or(&collapsed)
+        .to_string()
+}
+
+/// Dedup key for a track: the videoId when it's YouTube, else the full URI.
+pub fn track_key(uri: &str) -> String {
+    extract_video_id(uri).unwrap_or_else(|| uri.to_string())
+}
+
+/// A single YouTube-Mix entry, already resolved to playable metadata.
+#[derive(Clone, Debug)]
+pub struct MixCandidate {
+    pub video_id: String,
+    pub webpage_url: String,
+    pub title: String,
+    pub author: String,
+    pub duration_secs: Option<u64>,
+    pub thumbnail: String,
+    pub is_live: bool,
+}
+
+/// Picks the first mix entry that survives every autoplay filter.
+/// Returns the index into `candidates`. Pure logic — fully unit-tested.
+pub fn autoplay_pick(
+    candidates: &[MixCandidate],
+    seed_video_id: &str,
+    seed_author_norm: &str,
+    history: &VecDeque<String>,
+    queued_keys: &[String],
+) -> Option<usize> {
+    candidates.iter().position(|c| {
+        if c.video_id.is_empty() || c.video_id == seed_video_id {
+            return false; // the seed itself (mixes list it first)
+        }
+        if c.title.trim().is_empty() {
+            return false;
+        }
+        if c.is_live {
+            return false;
+        }
+        match c.duration_secs {
+            Some(d) if d > 0 && d <= AUTOPLAY_MAX_SECS => {}
+            _ => return false, // unknown length or a 2-hour compilation
+        }
+        if !seed_author_norm.is_empty()
+            && normalize_author(&c.author) == seed_author_norm
+        {
+            return false; // same artist as the last song
+        }
+        let key = track_key(&c.webpage_url);
+        if history.contains(&key) {
+            return false; // played recently
+        }
+        if queued_keys.contains(&key) {
+            return false; // already waiting in the queue
+        }
+        true
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct Track {
     pub uri: String,
@@ -334,6 +435,10 @@ pub struct GuildState {
     /// Bounds rejoin flapping (e.g. an admin repeatedly kicking the bot) to
     /// ~once a minute. Deliberately preserved across state resets.
     pub stay_last_rejoin: Option<std::time::Instant>,
+    /// URIs (or YouTube videoIds) of recently started tracks, oldest first.
+    /// Autoplay consults this so the radio never repeats itself; capped so a
+    /// 24/7 radio can't grow memory without bound.
+    pub autoplay_history: VecDeque<String>,
     /// True when the current track plays from an in-memory Opus cache
     /// (set after the first seek) — native seeks are instant on it.
     pub current_is_cached: bool,
@@ -400,6 +505,7 @@ impl Default for GuildState {
             recovering: false,
             cooldown_until: None,
             stay_last_rejoin: None,
+            autoplay_history: VecDeque::new(),
             current_is_cached: false,
             inactivity_task: None,
             stay_return_task: None,
@@ -646,5 +752,119 @@ mod tests {
         assert_eq!(reg.get(gid).queue.len(), 1);
         assert_eq!(reg.get(GuildId::new(2)).queue.len(), 0);
         assert_eq!(reg.total_queue_len(), 1);
+    }
+
+    #[test]
+    fn video_id_extraction() {
+        assert_eq!(
+            extract_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+            Some("dQw4w9WgXcQ".into())
+        );
+        assert_eq!(
+            extract_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ"),
+            Some("dQw4w9WgXcQ".into())
+        );
+        assert_eq!(
+            extract_video_id("https://youtu.be/dQw4w9WgXcQ"),
+            Some("dQw4w9WgXcQ".into())
+        );
+        assert_eq!(extract_video_id("ytsearch1:coldplay yellow"), None);
+        assert_eq!(
+            extract_video_id("https://soundcloud.com/artist/track"),
+            None
+        );
+        assert_eq!(
+            extract_video_id("https://www.youtube.com/watch?v=short"),
+            None
+        );
+        assert_eq!(extract_video_id("not a url"), None);
+    }
+
+    #[test]
+    fn author_normalization_catches_topic_channels() {
+        assert_eq!(normalize_author("Coldplay"), "coldplay");
+        assert_eq!(normalize_author("Coldplay - Topic"), "coldplay");
+        assert_eq!(normalize_author("  Coldplay   -   Topic  "), "coldplay");
+        assert_eq!(normalize_author("The Weeknd"), "the weeknd");
+        assert_eq!(normalize_author(""), "");
+    }
+
+    fn mix_cand(
+        id: &str,
+        title: &str,
+        author: &str,
+        dur: Option<u64>,
+        live: bool,
+    ) -> MixCandidate {
+        MixCandidate {
+            video_id: id.into(),
+            webpage_url: format!("https://www.youtube.com/watch?v={id}"),
+            title: title.into(),
+            author: author.into(),
+            duration_secs: dur,
+            thumbnail: String::new(),
+            is_live: live,
+        }
+    }
+
+    #[test]
+    fn autoplay_pick_applies_every_filter() {
+        let seed = "SEEDSEED111";
+        let seed_author = normalize_author("Coldplay");
+        let history: VecDeque<String> =
+            vec!["PLAYEDPLAY1".to_string()].into_iter().collect();
+        let queued = vec!["QUEUEDQUEU1".to_string()];
+
+        // Index 0: the seed itself. 1: same artist. 2: played. 3: queued.
+        // 4: live. 5: too long. 6: unknown length. 7: empty title.
+        // 8: first clean winner.
+        let cands = vec![
+            mix_cand(seed, "Seed Song", "Coldplay", Some(200), false),
+            mix_cand("AAAAAAAAAAA", "Other", "Coldplay - Topic", Some(200), false),
+            mix_cand("PLAYEDPLAY1", "Old", "Someone", Some(200), false),
+            mix_cand("QUEUEDQUEU1", "Waiting", "Someone", Some(200), false),
+            mix_cand("BBBBBBBBBBB", "Live", "Someone", Some(200), true),
+            mix_cand("CCCCCCCCCCC", "Epic 3h mix", "Someone", Some(3 * 3600), false),
+            mix_cand("DDDDDDDDDDD", "Mystery", "Someone", None, false),
+            mix_cand("EEEEEEEEEEE", "   ", "Someone", Some(200), false),
+            mix_cand("FFFFFFFFFFF", "Fresh Track", "Someone Else", Some(180), false),
+        ];
+        assert_eq!(
+            autoplay_pick(&cands, seed, &seed_author, &history, &queued),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn autoplay_pick_returns_none_when_everything_filtered() {
+        let cands = vec![mix_cand(
+            "AAAAAAAAAAA",
+            "Same Artist",
+            "Coldplay",
+            Some(200),
+            false,
+        )];
+        let history = VecDeque::new();
+        let queued = vec![];
+        assert_eq!(
+            autoplay_pick(&cands, "SEEDSEED111", &normalize_author("coldplay"), &history, &queued),
+            None
+        );
+        assert_eq!(
+            autoplay_pick(&[], "SEEDSEED111", &normalize_author("x"), &history, &queued),
+            None
+        );
+    }
+
+    #[test]
+    fn track_key_prefers_video_id() {
+        assert_eq!(
+            track_key("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+            "dQw4w9WgXcQ"
+        );
+        assert_eq!(
+            track_key("https://soundcloud.com/a/b"),
+            "https://soundcloud.com/a/b"
+        );
     }
 }

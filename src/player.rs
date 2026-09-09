@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -553,6 +554,140 @@ pub async fn schedule_stay_return(core: &Arc<Core>, guild_id: GuildId) {
     }));
 }
 
+/// Disables autoplay with a one-time notice. Used when the seed can never
+/// resolve (not a transient failure — retrying would just spam).
+async fn autoplay_give_up(core: &Arc<Core>, guild_id: GuildId, msg: &str) {
+    core.clear_autoplay(guild_id).await;
+    let home = core
+        .registry
+        .get_if_exists(guild_id)
+        .and_then(|st| st.home_channel);
+    if let Some(home) = home {
+        say_to(
+            core,
+            home,
+            format!("{}  {msg}", config::emojis::WARN),
+        )
+        .await;
+    }
+}
+
+/// Resolves ONE follow-up track for autoplay: seed videoId (direct, else a
+/// YouTube-Music text search for `author title`), then the seed's YouTube Mix,
+/// then the pure `autoplay_pick` filters. Returns None on any failure.
+/// Transient fetch failures keep the mode armed (the normal conclude flow
+/// runs and the next manual track re-seeds); only an unresolvable seed
+/// disables the mode.
+async fn autoplay_next(
+    core: &Arc<Core>,
+    guild_id: GuildId,
+    seed: &Track,
+    history: VecDeque<String>,
+) -> Option<crate::sources::ResolvedMeta> {
+    use crate::state::{autoplay_pick, extract_video_id, normalize_author};
+
+    // 1. Seed videoId.
+    let seed_id = match extract_video_id(&seed.uri) {
+        Some(id) => id,
+        None => {
+            // Non-YouTube seed (Spotify/SC/file): find its YouTube twin for
+            // seeding purposes only — what played stays as-is.
+            let q = if seed.author.is_empty() || seed.author == "Unknown" {
+                seed.title.clone()
+            } else {
+                format!("{} {}", seed.author, seed.title)
+            };
+            match crate::sources::search_ytmusic(&q).await {
+                Ok(m) => match extract_video_id(&m.webpage_url) {
+                    Some(id) => id,
+                    None => {
+                        autoplay_give_up(
+                            core,
+                            guild_id,
+                            "Autoplay couldn't find a starting point on YouTube — turned off.",
+                        )
+                        .await;
+                        return None;
+                    }
+                },
+                Err(_) => {
+                    autoplay_give_up(
+                        core,
+                        guild_id,
+                        "Autoplay couldn't find a starting point on YouTube — turned off.",
+                    )
+                    .await;
+                    return None;
+                }
+            }
+        }
+    };
+
+    // 2. The seed's YouTube Mix (YouTube's own similarity engine).
+    let entries = match crate::sources::fetch_mix(&seed_id).await {
+        Ok(e) => e,
+        Err(e) => {
+            let short = e.chars().take(120).collect::<String>();
+            if let Some(home) = core
+                .registry
+                .get_if_exists(guild_id)
+                .and_then(|st| st.home_channel)
+            {
+                say_to(
+                    core,
+                    home,
+                    format!(
+                        "{}  Autoplay couldn't reach YouTube Mixes ({short}) — mode stays on for your next track.",
+                        config::emojis::WARN
+                    ),
+                )
+                .await;
+            }
+            return None;
+        }
+    };
+
+    // 3. Pure filters: no seed echo, no repeats, no same-artist back-to-back,
+    //    no live streams, no marathons, nothing already queued (queue is empty
+    //    at trigger time, so this is just future-proofing).
+    let seed_author = normalize_author(&seed.author);
+    let idx = autoplay_pick(&entries, &seed_id, &seed_author, &history, &[]);
+    let c = match idx.map(|i| &entries[i]) {
+        Some(c) => c,
+        None => {
+            if let Some(home) = core
+                .registry
+                .get_if_exists(guild_id)
+                .and_then(|st| st.home_channel)
+            {
+                say_to(
+                    core,
+                    home,
+                    format!(
+                        "{}  Autoplay ran out of fresh picks (repeats, same artist, live, or too long) — mode stays on for your next track.",
+                        config::emojis::WARN
+                    ),
+                )
+                .await;
+            }
+            return None;
+        }
+    };
+
+    log_info!("autoplay", "guild {guild_id}: seeded by {} -> {} - {}",
+        seed.title, c.author, c.title);
+    Some(crate::sources::ResolvedMeta {
+        webpage_url: c.webpage_url.clone(),
+        title: c.title.clone(),
+        author: c.author.clone(),
+        duration_secs: c.duration_secs,
+        thumbnail: c.thumbnail.clone(),
+        is_live: false,
+        is_spotify_match: false,
+        ui_link: None,
+    })
+}
+
 pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
     let Some(call) = core.voice.get(guild_id) else {
         let mut st = core.registry.get(guild_id);
@@ -580,11 +715,47 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
         st.np_message = None;
     }
 
+    // Snapshot the just-finished track BEFORE loop handling moves/drops it —
+    // it's the autoplay seed if the queue runs dry below.
+    let ended = st.current.clone();
     if let Some(cur) = st.current.take() {
         match st.loop_mode {
             LoopMode::Track => st.queue.push_front(cur),
             LoopMode::Queue => st.queue.push_back(cur),
             LoopMode::Off => {}
+        }
+    }
+
+    // Queue ran dry with loop off: autoplay gets one shot at keeping the
+    // radio going before we conclude. The lock is dropped across the fetch
+    // (it awaits a yt-dlp subprocess); state is re-verified afterwards in
+    // case the user acted meanwhile (stop/skip/play/disconnect).
+    if st.queue.is_empty() {
+        let seed = ended.clone();
+        let history = st.autoplay_history.clone();
+        let want_auto = seed.is_some() && core.autoplay_enabled(guild_id).await;
+        drop(st);
+        let mut auto_meta = None;
+        // want_auto implies seed.is_some(), but never unwrap in event code.
+        if want_auto && let Some(seed) = seed.as_ref() {
+            auto_meta = autoplay_next(&core, guild_id, seed, history).await;
+        }
+        st = core.registry.get(guild_id);
+        if let Some(meta) = auto_meta {
+            let stopped = !st.playing && st.current.is_none() && st.queue.is_empty();
+            let connected =
+                core.voice.get(guild_id).is_some() && st.voice_channel_id.is_some();
+            // Push only if nobody owns the flow now: a stop, a concurrent
+            // advance (double End/Error invoke), or a disable must win.
+            // A user queue meanwhile is fine — the auto track goes behind it.
+            if core.autoplay_enabled(guild_id).await
+                && connected
+                && st.current.is_none()
+                && !stopped
+            {
+                st.queue
+                    .push_back(Track::from_resolved(meta.into(), "Autoplay 🎧"));
+            }
         }
     }
 
@@ -628,6 +799,17 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
 
     st.previous = st.current.clone();
     st.current = Some(track.clone());
+    // Remember every started track (manual or auto) for autoplay
+    // repeat-avoidance. Bounded so a 24/7 radio can't grow memory.
+    {
+        let key = crate::state::track_key(&track.uri);
+        if st.autoplay_history.back() != Some(&key) {
+            st.autoplay_history.push_back(key);
+            while st.autoplay_history.len() > crate::state::AUTOPLAY_HISTORY_CAP {
+                st.autoplay_history.pop_front();
+            }
+        }
+    }
     st.playing = true;
     st.paused = false;
     let volume = st.volume;

@@ -16,6 +16,7 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         music::rewind(),
         music::volume(),
         music::loop_mode(),
+        music::autoplay(),
         music::shuffle(),
         music::clear_queue(),
         music::remove(),

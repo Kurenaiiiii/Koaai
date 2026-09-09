@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serenity::model::id::{ChannelId, GuildId};
@@ -18,6 +18,7 @@ pub struct Core {
     pub registry: Registry,
     pub prefixes: RwLock<HashMap<GuildId, String>>,
     pub stay_channels: RwLock<HashMap<GuildId, ChannelId>>,
+    pub autoplay: RwLock<HashSet<GuildId>>,
     pub voice: Arc<songbird::Songbird>,
     pub bot_id: serenity::model::id::UserId,
     pub cfg: crate::settings::Config,
@@ -45,6 +46,12 @@ impl Core {
                 Some((GuildId::new(g.parse().ok()?), ChannelId::new(c.parse().ok()?)))
             })
             .collect();
+        let autoplay = db
+            .autoplay_guilds()
+            .map_err(|e| format!("loading autoplay: {e}"))?
+            .into_iter()
+            .filter_map(|g| g.parse::<u64>().ok().map(GuildId::new))
+            .collect();
 
         Ok(Arc::new(Self {
             registry: {
@@ -59,6 +66,7 @@ impl Core {
                 .expect("reqwest client"),
             prefixes: RwLock::new(prefixes),
             stay_channels: RwLock::new(stay_channels),
+            autoplay: RwLock::new(autoplay),
             db,
             voice,
             bot_id,
@@ -102,6 +110,20 @@ impl Core {
 
     pub async fn stay_channel(&self, guild_id: GuildId) -> Option<ChannelId> {
         self.stay_channels.read().await.get(&guild_id).copied()
+    }
+
+    pub async fn autoplay_enabled(&self, guild_id: GuildId) -> bool {
+        self.autoplay.read().await.contains(&guild_id)
+    }
+
+    pub async fn set_autoplay(&self, guild_id: GuildId) {
+        let _ = self.db.set_autoplay(&guild_id.to_string());
+        self.autoplay.write().await.insert(guild_id);
+    }
+
+    pub async fn clear_autoplay(&self, guild_id: GuildId) {
+        let _ = self.db.delete_autoplay(&guild_id.to_string());
+        self.autoplay.write().await.remove(&guild_id);
     }
 
     /// Snapshot of every configured 24/7 channel, used for boot rejoin.

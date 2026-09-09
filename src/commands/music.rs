@@ -588,14 +588,58 @@ pub async fn loop_mode(ctx: Context<'_>) -> Result<(), Error> {
         st.loop_mode = st.loop_mode.cycle();
         st.loop_mode.label()
     };
+    // Loop takes precedence over autoplay while enabled — say so, or users
+    // will wonder why the radio went quiet.
+    let auto_note = if label != "Off" && core.autoplay_enabled(guild_id).await {
+        "\n-# Loop takes precedence over autoplay while it's on."
+    } else {
+        ""
+    };
     ok(
         ctx,
         &format!(
-            "{} Loop → **{label}**\n-# Cycles: off → single track → entire queue.",
+            "{} Loop → **{label}**\n-# Cycles: off → single track → entire queue.{auto_note}",
             config::emojis::LOOP
         ),
     )
     .await
+}
+
+/// Keep the radio going: similar tracks auto-play after the queue runs out
+#[poise::command(slash_command, prefix_command, aliases("ap"), guild_only)]
+pub async fn autoplay(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().expect("guild only");
+    let core = ctx.data().core.clone();
+
+    if !core.cfg.sources.youtube_enabled {
+        return err(
+            ctx,
+            "Autoplay needs YouTube enabled (`sources.youtube_enabled` in config).",
+        )
+        .await;
+    }
+
+    if core.autoplay_enabled(guild_id).await {
+        core.clear_autoplay(guild_id).await;
+        ok(
+            ctx,
+            &format!(
+                "{}  Autoplay Off.\n-# The queue plays out normally from here.",
+                config::emojis::PLAY
+            ),
+        )
+        .await
+    } else {
+        core.set_autoplay(guild_id).await;
+        ok(
+            ctx,
+            &format!(
+                "{}  Autoplay On — radio mode armed.\n-# Similar tracks keep playing after your queue runs out. No repeats, never the same artist twice in a row. Loop modes pause it while on. It stays armed through `stop`/`clear`; `leave` turns it off — or toggle again.",
+                config::emojis::PLAY
+            ),
+        )
+        .await
+    }
 }
 
 /// Shuffle all tracks in the queue

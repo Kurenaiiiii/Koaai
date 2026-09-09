@@ -120,6 +120,9 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
     let core = ctx.data().core.clone();
 
     core.clear_stay_channel(guild_id).await;
+    // Leaving ends the session fully — autoplay goes off with it.
+    let had_autoplay = core.autoplay_enabled(guild_id).await;
+    core.clear_autoplay(guild_id).await;
     {
         let mut st = core.registry.get(guild_id);
         st.request_stop();
@@ -145,8 +148,13 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
     core.registry.get(guild_id).voice_channel_id = None;
     memory::trim();
 
+    let auto_note = if had_autoplay {
+        "\n-# Autoplay was on — turned it off too."
+    } else {
+        ""
+    };
     let comps = crate::ui::info_container(format!(
-        "{}  Left and disabled 24/7 mode.\n-# From now on I auto-leave after 5 idle minutes. Re-enable anytime with `+join`.",
+        "{0}  Left and disabled 24/7 mode.\n-# From now on I auto-leave after 5 idle minutes. Re-enable anytime with `+join`.{auto_note}",
         config::emojis::WAVE
     ));
     send_cv2_ephemeral(ctx, comps).await
@@ -222,7 +230,7 @@ pub async fn help_cmd(
         &prefix,
         category.as_deref(),
         &bot_name,
-        22,
+        23,
     );
 
     ctx.send(

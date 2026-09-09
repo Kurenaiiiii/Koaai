@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS stay_channels (
     guild_id   TEXT PRIMARY KEY,
     channel_id TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS autoplay (
+    guild_id TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS reports (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     report_id    TEXT    UNIQUE NOT NULL,
@@ -103,6 +106,30 @@ impl Db {
     pub fn delete_stay_channel(&self, guild_id: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM stay_channels WHERE guild_id = ?", [guild_id])?;
+        Ok(())
+    }
+
+    pub fn autoplay_guilds(&self) -> Result<Vec<String>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT guild_id FROM autoplay")?;
+        let rows = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn set_autoplay(&self, guild_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO autoplay (guild_id) VALUES (?)",
+            [guild_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_autoplay(&self, guild_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM autoplay WHERE guild_id = ?", [guild_id])?;
         Ok(())
     }
 
@@ -302,6 +329,23 @@ mod tests {
         );
         db.delete_stay_channel("123").unwrap();
         assert!(db.stay_channels().unwrap().is_empty());
+    }
+
+    #[test]
+    fn roundtrip_autoplay() {
+        let db = Db::open(":memory:").unwrap();
+        assert!(db.autoplay_guilds().unwrap().is_empty());
+        db.set_autoplay("123").unwrap();
+        db.set_autoplay("456").unwrap();
+        // INSERT OR REPLACE keeps it idempotent.
+        db.set_autoplay("123").unwrap();
+        let mut guilds = db.autoplay_guilds().unwrap();
+        guilds.sort();
+        assert_eq!(guilds, vec!["123".to_string(), "456".to_string()]);
+        db.delete_autoplay("123").unwrap();
+        assert_eq!(db.autoplay_guilds().unwrap(), vec!["456".to_string()]);
+        db.delete_autoplay("456").unwrap();
+        assert!(db.autoplay_guilds().unwrap().is_empty());
     }
 
     #[test]

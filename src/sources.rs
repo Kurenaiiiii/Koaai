@@ -110,6 +110,88 @@ pub fn is_url(q: &str) -> bool {
     q.starts_with("http://") || q.starts_with("https://")
 }
 
+// ── Autoplay: YouTube Mix (radio) seeded by a videoId ───────────────────────
+// Mixes are YouTube's own similarity engine (`watch?v=SEED&list=RDSEED`).
+// Spotify killed recommendations/audio-features for new apps (Nov 2024), so
+// this is the only viable "similar songs" source. No new dependencies.
+
+fn parse_mix_entry(v: &serde_json::Value) -> Option<crate::state::MixCandidate> {
+    if v.get("_type").and_then(|t| t.as_str()) == Some("playlist") {
+        return None;
+    }
+    let e: YtDlpEntry = serde_json::from_value(v.clone()).ok()?;
+    // Flat mix entries carry the video id; build a canonical watch URL from
+    // it (flat `url` fields are unreliable across yt-dlp versions).
+    let id = v
+        .get("id")
+        .and_then(|i| i.as_str())
+        .filter(|id| id.len() == 11)?;
+    let thumbnail = e.thumbnail.or_else(|| {
+        v.get("thumbnails")
+            .and_then(|t| t.as_array())
+            .and_then(|a| {
+                a.iter()
+                    .filter_map(|t| t.get("url")?.as_str())
+                    .next_back()
+            })
+            .map(str::to_string)
+    });
+    Some(crate::state::MixCandidate {
+        video_id: id.to_string(),
+        webpage_url: format!("https://www.youtube.com/watch?v={id}"),
+        title: e.title.unwrap_or_else(|| "Unknown".into()),
+        author: e
+            .channel
+            .or(e.uploader)
+            .unwrap_or_else(|| "Unknown".into()),
+        duration_secs: e.duration.map(|d| d as u64).filter(|d| *d > 0),
+        thumbnail: thumbnail.unwrap_or_default(),
+        is_live: e.is_live.unwrap_or(false),
+    })
+}
+
+/// Fetches up to `AUTOPLAY_MIX_LIMIT` entries of the seed's YouTube Mix.
+/// Returns them raw (unfiltered) — filtering happens in `autoplay_pick`.
+pub async fn fetch_mix(seed_video_id: &str) -> Result<Vec<crate::state::MixCandidate>, String> {
+    use crate::log_sources;
+    use crate::state::AUTOPLAY_MIX_LIMIT;
+
+    let url = format!(
+        "https://www.youtube.com/watch?v={seed_video_id}&list=RD{seed_video_id}"
+    );
+    let limit = AUTOPLAY_MIX_LIMIT.to_string();
+    let stdout = run_ytdlp(&[
+        "-j",
+        "--flat-playlist",
+        "--playlist-end",
+        &limit,
+        &url,
+    ])
+    .await?;
+    let mut out = Vec::new();
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(m) = parse_mix_entry(&v) {
+            out.push(m);
+        }
+    }
+    drop(stdout);
+    crate::memory::trim();
+    if out.is_empty() {
+        return Err(format!(
+            "YouTube Mix for `{seed_video_id}` came back empty"
+        ));
+    }
+    log_sources!(
+        "Autoplay",
+        "mix for `{seed_video_id}` -> {} candidates",
+        out.len()
+    );
+    Ok(out)
+}
+
 fn youtube_search(query: &str) -> String {
     format!("ytsearch1:{query}")
 }

@@ -225,7 +225,7 @@ pub fn queue_components(
 
 const HELP_PAGES: &[(&str, &str, &[&str])] = &[
     ("Music", "Playback commands", &["play","pause","resume","skip","stop","nowplaying","seek","forward","rewind"]),
-    ("Playlist", "Queue management", &["queue","shuffle","clear","remove","move","loop"]),
+    ("Playlist", "Queue management", &["queue","shuffle","clear","remove","move","loop","autoplay"]),
     ("Audio", "Volume and filters", &["volume"]),
     ("Settings", "Bot configuration", &["setprefix","join","leave"]),
     ("Info", "Bot statistics", &["ping","uptime","help"]),
@@ -611,7 +611,7 @@ pub mod router {
         };
 
         let prefix = core.prefix(Some(GuildId::new(gid))).await;
-        let comps = help_components(gid, &prefix, Some(&category), "Koaai", 22);
+        let comps = help_components(gid, &prefix, Some(&category), "Koaai", 23);
 
         let _ = interaction
             .create_response(
