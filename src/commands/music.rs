@@ -636,18 +636,14 @@ pub async fn autoplay(ctx: Context<'_>) -> Result<(), Error> {
         core.clear_autoplay(guild_id).await;
         ok(
             ctx,
-            &format!(
-                "📻  Autoplay **disabled** ❌\n-# The queue plays out normally from here.",
-            ),
+            "📻  Autoplay **disabled** ❌\n-# The queue plays out normally from here.",
         )
         .await
     } else {
         core.set_autoplay(guild_id).await;
         ok(
             ctx,
-            &format!(
-                "📻  Autoplay **enabled** ✅\n-# Similar tracks keep playing after your queue runs out. No repeats, never the same artist twice in a row. Loop modes pause it while on. `stop` turns it off — or toggle again.",
-            ),
+            "📻  Autoplay **enabled** ✅\n-# Similar songs till the queue ends: no repeats, no same-artist replays.",
         )
         .await
     }
@@ -805,10 +801,11 @@ pub async fn nowplaying(ctx: Context<'_>) -> Result<(), Error> {
     let guild_id = ctx.guild_id().expect("guild only");
     let core = ctx.data().core.clone();
 
+    let auto = core.autoplay_enabled(guild_id).await;
     let st = core.registry.get(guild_id);
     match st.current.clone() {
         Some(t) => {
-            let comps = crate::ui::now_playing_components(guild_id.get(), &st, &t);
+            let comps = crate::ui::now_playing_components(guild_id.get(), &st, &t, auto);
             drop(st);
             ctx.send(
                 poise::CreateReply::default()

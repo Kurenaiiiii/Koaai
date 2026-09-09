@@ -84,6 +84,23 @@ fn e(s: &'static str) -> ReactionType {
     })
 }
 
+/// Autoplay toggle row (label carries the state, like the old bot's NP card).
+pub fn autoplay_row(autoplay_on: bool, guild_id: u64) -> CreateActionRow<'static> {
+    CreateActionRow::Buttons(std::borrow::Cow::Owned(vec![
+        CreateButton::new(format!("koaai:ap:{guild_id}"))
+            .label(if autoplay_on {
+                "📻 AP: On"
+            } else {
+                "📻 Autoplay"
+            })
+            .style(if autoplay_on {
+                ButtonStyle::Success
+            } else {
+                ButtonStyle::Secondary
+            }),
+    ]))
+}
+
 pub fn player_row(state: &GuildState, guild_id: u64) -> CreateActionRow<'static> {
     let paused = state.paused;
     let lm = state.loop_mode;
@@ -119,7 +136,12 @@ fn md_title(t: &Track) -> String {
     t.title.replace('[', "(").replace(']', ")")
 }
 
-pub fn now_playing_components(guild_id: u64, st: &GuildState, track: &Track) -> Comps {
+pub fn now_playing_components(
+    guild_id: u64,
+    st: &GuildState,
+    track: &Track,
+    autoplay_on: bool,
+) -> Comps {
     let duration = track.duration_display();
     let safe_uri = track.link_for_ui();
     let title_md = md_title(track);
@@ -145,6 +167,10 @@ pub fn now_playing_components(guild_id: u64, st: &GuildState, track: &Track) -> 
         inner.push(text(desc));
     }
     inner.push(CreateContainerComponent::ActionRow(player_row(st, guild_id)));
+    inner.push(CreateContainerComponent::ActionRow(autoplay_row(
+        autoplay_on,
+        guild_id,
+    )));
 
     container(inner, config::C_NP)
 }
@@ -359,8 +385,9 @@ pub mod router {
         let Some((channel, msg)) = np_msg else { return };
         let Some(track) = track else { return };
 
+        let auto = core.autoplay_enabled(guild_id).await;
         let st = core.registry.get(guild_id);
-        let comps = now_playing_components(guild_id.get(), &st, &track);
+        let comps = now_playing_components(guild_id.get(), &st, &track, auto);
         drop(st);
 
         let _ = serenity::all::GenericChannelId::new(channel.get())
@@ -522,6 +549,26 @@ pub mod router {
                 {
                     let mut st = core.registry.get(guild_id);
                     st.loop_mode = st.loop_mode.cycle();
+                }
+                let _ = interaction
+                    .create_response(&core.http_api, CreateInteractionResponse::Acknowledge)
+                    .await;
+                refresh_np(core, guild_id).await;
+            }
+            "ap" => {
+                if core.autoplay_enabled(guild_id).await {
+                    core.clear_autoplay(guild_id).await;
+                } else {
+                    if !core.cfg.sources.youtube_enabled {
+                        ephemeral(
+                            core,
+                            interaction,
+                            "Autoplay needs YouTube enabled in config.".to_string(),
+                        )
+                        .await;
+                        return true;
+                    }
+                    core.set_autoplay(guild_id).await;
                 }
                 let _ = interaction
                     .create_response(&core.http_api, CreateInteractionResponse::Acknowledge)

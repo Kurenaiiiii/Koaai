@@ -554,30 +554,20 @@ pub async fn schedule_stay_return(core: &Arc<Core>, guild_id: GuildId) {
     }));
 }
 
-/// Disables autoplay with a one-time notice. Used when the seed can never
-/// resolve (not a transient failure — retrying would just spam).
-async fn autoplay_give_up(core: &Arc<Core>, guild_id: GuildId, msg: &str) {
+/// Silently disarms autoplay. The conclude path announces it uniformly
+/// ("Autoplay ended with the queue"), so failure sites stay quiet — one
+/// message per ending, never a burst.
+async fn autoplay_disable(core: &Arc<Core>, guild_id: GuildId, why: &str) {
     core.clear_autoplay(guild_id).await;
-    let home = core
-        .registry
-        .get_if_exists(guild_id)
-        .and_then(|st| st.home_channel);
-    if let Some(home) = home {
-        say_to(
-            core,
-            home,
-            format!("{}  {msg}", config::emojis::WARN),
-        )
-        .await;
-    }
+    log_info!("autoplay", "guild {guild_id}: disabled ({why})");
 }
 
 /// Resolves ONE follow-up track for autoplay: seed videoId (direct, else a
 /// YouTube-Music text search for `author title`), then the seed's YouTube Mix,
 /// then the pure `autoplay_pick` filters. Returns None on any failure.
-/// Transient fetch failures keep the mode armed (the normal conclude flow
-/// runs and the next manual track re-seeds); only an unresolvable seed
-/// disables the mode.
+///
+/// Autoplay lives and dies with the queue: ANY failure here leads to the
+/// normal conclude path, which disarms the mode. No "armed but idle" state.
 async fn autoplay_next(
     core: &Arc<Core>,
     guild_id: GuildId,
@@ -601,22 +591,12 @@ async fn autoplay_next(
                 Ok(m) => match extract_video_id(&m.webpage_url) {
                     Some(id) => id,
                     None => {
-                        autoplay_give_up(
-                            core,
-                            guild_id,
-                            "Autoplay couldn't find a starting point on YouTube — turned off.",
-                        )
-                        .await;
+                        autoplay_disable(core, guild_id, "seed has no YouTube twin").await;
                         return None;
                     }
                 },
                 Err(_) => {
-                    autoplay_give_up(
-                        core,
-                        guild_id,
-                        "Autoplay couldn't find a starting point on YouTube — turned off.",
-                    )
-                    .await;
+                    autoplay_disable(core, guild_id, "seed lookup failed").await;
                     return None;
                 }
             }
@@ -627,22 +607,8 @@ async fn autoplay_next(
     let entries = match crate::sources::fetch_mix(&seed_id).await {
         Ok(e) => e,
         Err(e) => {
-            let short = e.chars().take(120).collect::<String>();
-            if let Some(home) = core
-                .registry
-                .get_if_exists(guild_id)
-                .and_then(|st| st.home_channel)
-            {
-                say_to(
-                    core,
-                    home,
-                    format!(
-                        "{}  Autoplay couldn't reach YouTube Mixes ({short}) — mode stays on for your next track.",
-                        config::emojis::WARN
-                    ),
-                )
-                .await;
-            }
+            log_info!("autoplay", "guild {guild_id}: mix fetch failed ({e})");
+            autoplay_disable(core, guild_id, "mix unreachable").await;
             return None;
         }
     };
@@ -655,21 +621,7 @@ async fn autoplay_next(
     let c = match idx.map(|i| &entries[i]) {
         Some(c) => c,
         None => {
-            if let Some(home) = core
-                .registry
-                .get_if_exists(guild_id)
-                .and_then(|st| st.home_channel)
-            {
-                say_to(
-                    core,
-                    home,
-                    format!(
-                        "{}  Autoplay ran out of fresh picks (repeats, same artist, live, or too long) — mode stays on for your next track.",
-                        config::emojis::WARN
-                    ),
-                )
-                .await;
-            }
+            autoplay_disable(core, guild_id, "mix exhausted (repeats/artist/live/long)").await;
             return None;
         }
     };
@@ -716,8 +668,10 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
     }
 
     // Snapshot the just-finished track BEFORE loop handling moves/drops it —
-    // it's the autoplay seed if the queue runs dry below.
-    let ended = st.current.clone();
+    // it's the autoplay seed if the queue runs dry below. Falls back to
+    // `previous`: skip takes `current` into `previous` before play_next runs,
+    // so without the fallback every skip would starve the radio of its seed.
+    let ended = st.current.clone().or_else(|| st.previous.clone());
     if let Some(cur) = st.current.take() {
         match st.loop_mode {
             LoopMode::Track => st.queue.push_front(cur),
@@ -774,6 +728,15 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
         drop(st);
         memory::trim();
 
+        // Autoplay lives with the queue: a full conclude disarms it (failed
+        // fills already disarmed above; this covers the no-seed path too).
+        let auto_note = if core.autoplay_enabled(guild_id).await {
+            core.clear_autoplay(guild_id).await;
+            "\n-# Autoplay ended with the queue — turned off."
+        } else {
+            ""
+        };
+
         if had_activity {
             clear_channel_status(&core, guild_id).await;
             let prefix = core.prefix(Some(guild_id)).await;
@@ -782,7 +745,7 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
                     &core,
                     home,
                     format!(
-                        "## ⏹️ Queue Concluded\nUse `{prefix}play` to add more songs.\n-# 💤 Leaving voice in 5 minutes unless 24/7 mode is active.",
+                        "## ⏹️ Queue Concluded\nUse `{prefix}play` to add more songs.\n-# 💤 Leaving voice in 5 minutes unless 24/7 mode is active.{auto_note}",
                     ),
                 )
                 .await;
@@ -889,8 +852,10 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
     set_channel_status(&core, guild_id, &track).await;
 
     if let Some(home) = home {
+        let auto = core.autoplay_enabled(guild_id).await;
         let st_view = core.registry.get(guild_id);
-        let comps = crate::ui::now_playing_components(guild_id.get(), &st_view, &track);
+        let comps =
+            crate::ui::now_playing_components(guild_id.get(), &st_view, &track, auto);
         drop(st_view);
         match serenity::all::GenericChannelId::new(home.get())
             .send_message(&core.http_api, crate::ui::container_msg(comps))
