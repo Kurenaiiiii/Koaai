@@ -636,7 +636,17 @@ async fn autoplay_next(
         }
     };
 
-    log_info!("autoplay", "guild {guild_id}: seeded by {} -> {} - {}",
+    // Prefer the canonical audio twin: mix entries are sometimes music videos
+    // with skits/dialogue/story animation baked in — useless without the
+    // picture. YouTube Music's catalog match is the clean song version.
+    // Falls back to the mix URL when no verifiable twin exists.
+    if let Some(audio) = upgrade_to_audio(c, &seed_id, &seed_author, &history, &[]).await {
+        log_info!("autoplay", "guild {guild_id}: {} -> audio twin {} - {}",
+            seed.title, audio.author, audio.title);
+        return Some(audio);
+    }
+
+    log_info!("autoplay", "guild {guild_id}: seeded by {} -> {} - {} (mix url, no audio twin)",
         seed.title, c.author, c.title);
     Some(crate::sources::ResolvedMeta {
         webpage_url: c.webpage_url.clone(),
@@ -648,6 +658,41 @@ async fn autoplay_next(
         is_spotify_match: false,
         ui_link: None,
     })
+}
+
+/// Resolves a mix candidate to its YouTube-Music audio twin and verifies it:
+/// same song (stub match), no author back-to-back, never played/queued.
+/// None means "keep the mix URL" — never fatal.
+async fn upgrade_to_audio(
+    c: &crate::state::MixCandidate,
+    seed_video_id: &str,
+    seed_author_norm: &str,
+    history: &VecDeque<crate::state::HistoryEntry>,
+    queued: &[crate::state::HistoryEntry],
+) -> Option<crate::sources::ResolvedMeta> {
+    use crate::state::{audio_upgrade_ok, extract_video_id, normalize_title_stub};
+
+    let q = if c.author.is_empty() || c.author == "Unknown" {
+        c.title.clone()
+    } else {
+        format!("{} {}", c.author, c.title)
+    };
+    let m = crate::sources::search_ytmusic(&q).await.ok()?;
+    let vid = extract_video_id(&m.webpage_url)?;
+    let cand_stub = normalize_title_stub(&c.title);
+    if !audio_upgrade_ok(
+        &vid,
+        &m.title,
+        &m.author,
+        &cand_stub,
+        seed_video_id,
+        seed_author_norm,
+        history,
+        queued,
+    ) {
+        return None;
+    }
+    Some(m)
 }
 
 pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {

@@ -208,18 +208,54 @@ pub struct HistoryEntry {
     pub author_norm: String,
 }
 
-/// Title markers of non-original uploads. Radio plays originals only —
-/// covers, mashups, slowed/reverb edits and friends never get picked.
-const COVER_MARKERS: &[&str] = &[
+/// Title markers of uploads radio must never pick. Two species:
+/// non-original audio (covers, mashups, slowed edits, ...) and video-first
+/// uploads whose audio isn't the song (skits, story animations, teasers —
+/// useless without the picture). Deliberately NOT bare "story" or "video":
+/// "Story of My Life" and half of all official uploads would die.
+const NON_SONG_MARKERS: &[&str] = &[
     "cover", "mashup", "mash up", "mash-up", "unplugged", "acoustic", "remix",
     "slowed", "sped up", "speed up", "spedup", "reverb", "nightcore",
     "8d audio", "lofi", "lo-fi", "karaoke", "instrumental", "ringtone",
-    "tiktok",
+    "tiktok", "teaser", "trailer", "short film", "episode", "interview",
+    "behind the scenes", "making of", "vlog", "reaction", "animated",
+    "animation", "love story",
 ];
 
-pub fn is_cover_like(title: &str) -> bool {
+pub fn is_non_song(title: &str) -> bool {
     let lower = title.to_lowercase();
-    COVER_MARKERS.iter().any(|m| lower.contains(m))
+    NON_SONG_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Verifies a YouTube-Music audio upgrade before swapping it in: same song
+/// (stub match), not the seed, no author back-to-back, never played/queued.
+/// Pure logic — unit-tested.
+#[allow(clippy::too_many_arguments)]
+pub fn audio_upgrade_ok(
+    ytm_video_id: &str,
+    ytm_title: &str,
+    ytm_author: &str,
+    cand_stub: &str,
+    seed_video_id: &str,
+    seed_author_norm: &str,
+    history: &VecDeque<HistoryEntry>,
+    queued: &[HistoryEntry],
+) -> bool {
+    if ytm_video_id.is_empty() || ytm_video_id == seed_video_id {
+        return false;
+    }
+    if cand_stub.is_empty() || normalize_title_stub(ytm_title) != cand_stub {
+        return false; // YTM returned a different song
+    }
+    if !seed_author_norm.is_empty() && normalize_author(ytm_author) == seed_author_norm {
+        return false;
+    }
+    if history.iter().any(|h| h.key == ytm_video_id)
+        || queued.iter().any(|h| h.key == ytm_video_id)
+    {
+        return false;
+    }
+    true
 }
 
 /// Tiny non-crypto RNG without adding a `rand` dependency. Radio shuffling
@@ -292,8 +328,8 @@ pub fn autoplay_pick(
             if c.title.trim().is_empty() {
                 return None;
             }
-            if is_cover_like(&c.title) {
-                return None; // covers, mashups, slowed edits — originals only
+            if is_non_song(&c.title) {
+                return None; // covers, video-versions, slowed edits — songs only
             }
             if c.is_live {
                 return None;
@@ -996,6 +1032,9 @@ mod tests {
 
     #[test]
     fn cover_blocklist() {
+        // NOTE: "Noor, Khan, Madhurxo - Aarzu" (skit-laden video version)
+        // carries no blockable keyword — that species dies via the YTM audio
+        // upgrade path instead (see audio_upgrade_verification).
         for t in [
             "Khat (cover)",
             "Best Mashup 2024",
@@ -1004,17 +1043,89 @@ mod tests {
             "Hit Lofi Remix",
             "Unplugged Version",
             "Dance Karaoke",
+            "Bairan – Animated Love Story | Banjaare",
+            "Film Trailer Theme",
+            "Tour Vlog Part 2",
         ] {
-            assert!(is_cover_like(t), "{t} should be blocked");
+            assert!(is_non_song(t), "{t} should be blocked");
         }
         for t in [
             "Khat",
             "Arz Kiya Hai",
             "Higher Power",
+            "Story of My Life",
+            "Drama",
             "Dooron Dooron (Live from The Voice Notes Concert)",
         ] {
-            assert!(!is_cover_like(t), "{t} should pass");
+            assert!(!is_non_song(t), "{t} should pass");
         }
+    }
+
+    #[test]
+    fn audio_upgrade_verification() {
+        let history: VecDeque<HistoryEntry> = vec![HistoryEntry::new(
+            "https://www.youtube.com/watch?v=PLAYEDPLAY1",
+            "Old Song",
+            "Someone",
+        )]
+        .into_iter()
+        .collect();
+        let queued: Vec<HistoryEntry> = vec![];
+        // Clean upgrade: same song, fresh id, different author than seed.
+        assert!(audio_upgrade_ok(
+            "NEWNEWNEW11",
+            "Aarzu",
+            "Noor",
+            "aarzu",
+            "SEEDSEED111",
+            "coldplay",
+            &history,
+            &queued
+        ));
+        // YTM returned a different song.
+        assert!(!audio_upgrade_ok(
+            "NEWNEWNEW11",
+            "Something Else",
+            "Noor",
+            "aarzu",
+            "SEEDSEED111",
+            "coldplay",
+            &history,
+            &queued
+        ));
+        // Same artist back-to-back.
+        assert!(!audio_upgrade_ok(
+            "NEWNEWNEW11",
+            "Aarzu",
+            "Coldplay",
+            "aarzu",
+            "SEEDSEED111",
+            "coldplay",
+            &history,
+            &queued
+        ));
+        // Upgraded id was already played.
+        assert!(!audio_upgrade_ok(
+            "PLAYEDPLAY1",
+            "Aarzu",
+            "Noor",
+            "aarzu",
+            "SEEDSEED111",
+            "coldplay",
+            &history,
+            &queued
+        ));
+        // Upgraded id is the seed itself.
+        assert!(!audio_upgrade_ok(
+            "SEEDSEED111",
+            "Aarzu",
+            "Noor",
+            "aarzu",
+            "SEEDSEED111",
+            "coldplay",
+            &history,
+            &queued
+        ));
     }
 
     #[test]
