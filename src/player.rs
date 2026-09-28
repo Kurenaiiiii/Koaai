@@ -362,6 +362,20 @@ fn cancel_timers(st: &mut GuildState) {
     }
 }
 
+/// Fire-and-forget message delete (never blocks a lock; mirrors the NP-card
+/// cleanup style). None is a no-op.
+fn delete_msg_soon(core: &Arc<Core>, target: Option<(ChannelId, serenity::model::id::MessageId)>) {
+    let Some((channel, msg)) = target else {
+        return;
+    };
+    let core2 = core.clone();
+    tokio::spawn(async move {
+        let _ = serenity::all::GenericChannelId::new(channel.get())
+            .delete_message(&core2.http_api, msg, None)
+            .await;
+    });
+}
+
 fn clear_queue_and_shrink(st: &mut GuildState) {
     st.queue.clear();
     st.queue.shrink_to_fit();
@@ -672,7 +686,7 @@ async fn upgrade_to_audio(
     history: &VecDeque<crate::state::HistoryEntry>,
     queued: &[crate::state::HistoryEntry],
 ) -> Option<crate::sources::ResolvedMeta> {
-    use crate::state::{audio_upgrade_ok, extract_video_id, normalize_title_stub};
+    use crate::state::{audio_upgrade_ok, extract_video_id};
 
     let q = if c.author.is_empty() || c.author == "Unknown" {
         c.title.clone()
@@ -681,12 +695,11 @@ async fn upgrade_to_audio(
     };
     let m = crate::sources::search_ytmusic(&q).await.ok()?;
     let vid = extract_video_id(&m.webpage_url)?;
-    let cand_stub = normalize_title_stub(&c.title);
     if !audio_upgrade_ok(
         &vid,
         &m.title,
         &m.author,
-        &cand_stub,
+        &c.title,
         seed_video_id,
         seed_author_norm,
         history,
@@ -741,9 +754,13 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
     // radio going before we conclude. The lock is dropped across the fetch
     // (it awaits a yt-dlp subprocess); state is re-verified afterwards in
     // case the user acted meanwhile (stop/skip/play/disconnect).
+    // `finding` (transient "finding…" marker) lives at function scope so the
+    // NP-send arms below can retire it once the card lands.
+    let mut finding: Option<(ChannelId, serenity::model::id::MessageId)> = None;
     if st.queue.is_empty() {
         let seed = ended.clone();
         let history = st.autoplay_history.clone();
+        let home_ch = st.home_channel;
         // `playing` must still be true: it distinguishes a live radio moment
         // (natural end, skip) from dead ones — prev-pressed-while-idle, or a
         // queue drained purely by track errors (radio must stay quiet during
@@ -752,18 +769,28 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
             seed.is_some() && st.playing && core.autoplay_enabled(guild_id).await;
         drop(st);
         let mut auto_meta = None;
+        // Transient "finding…" marker: the old NP card is already gone and the
+        // fetch takes seconds — without this the radio looks dead meanwhile.
+        // Deleted as soon as the outcome lands (NP card, discard, conclude).
         // want_auto implies seed.is_some(), but never unwrap in event code.
         if want_auto && let Some(seed) = seed.as_ref() {
+            if let Some(h) = home_ch {
+                finding = say_to(&core, h, "📻 Finding a similar track…".to_string())
+                    .await
+                    .map(|m| (h, m.id));
+            }
             auto_meta = autoplay_next(&core, guild_id, seed, history).await;
         }
         st = core.registry.get(guild_id);
+        // Proceed with radio only if nobody owns the flow now.
+        let mut radio_live = false;
         if let Some(meta) = auto_meta {
             let stopped = !st.playing && st.current.is_none() && st.queue.is_empty();
             let connected =
                 core.voice.get(guild_id).is_some() && st.voice_channel_id.is_some();
-            // Push only if nobody owns the flow now: a stop, a concurrent
-            // advance (double End/Error invoke), or a disable must win.
-            // A user queue meanwhile is fine — the auto track goes behind it.
+            // A stop, a concurrent advance (double End/Error invoke), or a
+            // disable must win. A user queue meanwhile is fine — the auto
+            // track goes behind it.
             if core.autoplay_enabled(guild_id).await
                 && connected
                 && st.current.is_none()
@@ -771,7 +798,11 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
             {
                 st.queue
                     .push_back(Track::from_resolved(meta.into(), "System / Autoplay"));
+                radio_live = true;
             }
+        }
+        if !radio_live {
+            delete_msg_soon(&core, finding.take());
         }
     }
 
@@ -863,31 +894,47 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
         }
     }
 
-    // Probe the stream once for authoritative metadata — resolvers (ytmusic,
-    // spotify-match, embed scrape) can return partial or stale info, but this
-    // extraction is exactly what will be played.
+    // Metadata probe: a FULL extra yt-dlp spawn (~seconds) before audio can
+    // start. Only worth it when the resolver left gaps — ytmusic / spotify /
+    // direct-URL resolves arrive complete, and skipping the probe is what
+    // keeps "Now starting" honest instead of 5-8s early.
+    let need_probe = core
+        .registry
+        .get(guild_id)
+        .current
+        .as_ref()
+        .is_none_or(|c| {
+            c.title.is_empty()
+                || c.title == "Unknown"
+                || c.author.is_empty()
+                || c.author == "Unknown"
+                || (!c.is_live && c.duration_secs.is_none())
+                || c.thumbnail.is_empty()
+        });
     let input = yt_input(&core, play_uri);
-    let mut probe = input.clone();
-    if let Ok(aux) = probe.aux_metadata().await {
-        let mut st = core.registry.get(guild_id);
-        if let Some(cur) = st.current.as_mut() {
-            if let Some(t) = aux.title {
-                cur.title = crate::state::clean_title(&t);
-            }
-            if let Some(c) = aux.channel.or(aux.artist)
-                && !c.is_empty() && c != "Unknown" {
-                    cur.author = c;
+    if need_probe {
+        let mut probe = input.clone();
+        if let Ok(aux) = probe.aux_metadata().await {
+            let mut st = core.registry.get(guild_id);
+            if let Some(cur) = st.current.as_mut() {
+                if let Some(t) = aux.title {
+                    cur.title = crate::state::clean_title(&t);
                 }
-            if let Some(d) = aux.duration {
-                cur.duration_secs = Some(d.as_secs());
-                cur.is_live = false;
-            }
-            if let Some(th) = aux.thumbnail
-                && !th.is_empty() {
-                    cur.thumbnail = th;
+                if let Some(c) = aux.channel.or(aux.artist)
+                    && !c.is_empty() && c != "Unknown" {
+                        cur.author = c;
+                    }
+                if let Some(d) = aux.duration {
+                    cur.duration_secs = Some(d.as_secs());
+                    cur.is_live = false;
                 }
+                if let Some(th) = aux.thumbnail
+                    && !th.is_empty() {
+                        cur.thumbnail = th;
+                    }
+            }
+            drop(st);
         }
-        drop(st);
     }
 
     let handle = {
@@ -931,8 +978,14 @@ pub async fn play_next(core: Arc<Core>, guild_id: GuildId) {
                     msg.flags.map(|f| f.bits())
                 );
                 core.registry.get(guild_id).np_message = Some((home, msg.id));
+                // Radio handoff complete — the transient "finding…" marker
+                // has served its purpose.
+                delete_msg_soon(&core, finding.take());
             }
-            Err(e) => warn!(error = %e, "np message send failed"),
+            Err(e) => {
+                warn!(error = %e, "np message send failed");
+                delete_msg_soon(&core, finding.take());
+            }
         }
     }
 }

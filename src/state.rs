@@ -229,15 +229,55 @@ pub fn is_non_song(title: &str) -> bool {
     NON_SONG_MARKERS.iter().any(|m| lower.contains(m))
 }
 
-/// Verifies a YouTube-Music audio upgrade before swapping it in: same song
-/// (stub match), not the seed, no author back-to-back, never played/queued.
+/// Lowercase + whitespace-collapsed, but NOT cut at separators.
+fn full_norm_title(title: &str) -> String {
+    title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Do two titles name the same song? Stub equality, plus containment — also
+/// against the FULL normalized title, because cutting at the first `" - "`
+/// destroys label-prefixed uploads (`"Sony Music India - Abhi..."` would stub
+/// to just `"sony music india"`). The contained side must be ≥4 chars so
+/// `"ek"` / `"do"` can never fuzzy-match half the catalog.
+pub fn title_stubs_match(a_title: &str, b_title: &str) -> bool {
+    let a = normalize_title_stub(a_title);
+    let b = normalize_title_stub(b_title);
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a == b {
+        return true;
+    }
+    let a_full = full_norm_title(a_title);
+    let b_full = full_norm_title(b_title);
+    for s in [&a, &b, &a_full, &b_full] {
+        if s.chars().count() < 4 {
+            continue;
+        }
+        for l in [&a, &b, &a_full, &b_full] {
+            // Same VALUE matching itself doesn't count (stubs often equal
+            // their full title when there are no separators to cut).
+            if s != l && l.contains(s) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Verifies a YouTube-Music audio upgrade before swapping it in: same song,
+/// not the seed, no author back-to-back, never played/queued.
 /// Pure logic — unit-tested.
 #[allow(clippy::too_many_arguments)]
 pub fn audio_upgrade_ok(
     ytm_video_id: &str,
     ytm_title: &str,
     ytm_author: &str,
-    cand_stub: &str,
+    cand_title: &str,
     seed_video_id: &str,
     seed_author_norm: &str,
     history: &VecDeque<HistoryEntry>,
@@ -246,7 +286,7 @@ pub fn audio_upgrade_ok(
     if ytm_video_id.is_empty() || ytm_video_id == seed_video_id {
         return false;
     }
-    if cand_stub.is_empty() || normalize_title_stub(ytm_title) != cand_stub {
+    if !title_stubs_match(ytm_title, cand_title) {
         return false; // YTM returned a different song
     }
     if !seed_author_norm.is_empty() && normalize_author(ytm_author) == seed_author_norm {
@@ -1067,6 +1107,23 @@ mod tests {
         ] {
             assert!(!is_non_song(t), "{t} should pass");
         }
+    }
+
+    #[test]
+    fn stub_containment_for_label_prefixed_uploads() {
+        // The Kabira case: mix candidate carries the label prefix, YTM has
+        // the clean song — containment must match where equality can't.
+        assert!(title_stubs_match(
+            "Abhi Mujh Mein Kahin",
+            "Sony Music India - Abhi Mujh Mein Kahin Best Lyric|Agneepath",
+        ));
+        assert!(title_stubs_match("Khat", "Khat - Navjot Ahuja"));
+        assert!(title_stubs_match("Khat - Navjot Ahuja", "Khat"));
+        assert!(!title_stubs_match("Something Else", "Aarzu"));
+        // Two-letter stubs never fuzzy-match ("ek"/"do" would match everything).
+        assert!(!title_stubs_match("Ek", "Ek Villain Returns"));
+        assert!(!title_stubs_match("", "Anything"));
+        assert!(!title_stubs_match("   ", "Anything"));
     }
 
     #[test]
