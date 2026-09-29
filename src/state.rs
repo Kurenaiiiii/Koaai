@@ -613,6 +613,10 @@ pub struct GuildState {
     stop_flag_at: Option<std::time::Instant>,
     pub error_streak: u32,
     pub recovering: bool,
+    /// Timestamps of recent track errors. The streak counter alone can't see
+    /// storms where every track starts (resetting the streak) then dies
+    /// seconds later — this window can.
+    pub error_times: VecDeque<std::time::Instant>,
     /// Open-circuit deadline after a systemic stop (max-errors or failed
     /// recovery). While open, automatic Error/End events are dropped silently
     /// so a deterministically-failing source can't spin a rejoin+retry storm.
@@ -671,6 +675,25 @@ impl GuildState {
     pub fn break_circuit(&mut self) {
         self.cooldown_until = None;
     }
+
+    /// Records a track error; returns true when errors are arriving fast
+    /// enough to call it systemic (6 errors within 2 minutes). Manual skips
+    /// never reach here (their stop flag consumes the event), so a trip
+    /// means real failures, not impatient users.
+    pub fn error_rate_tripped(&mut self) -> bool {
+        const WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
+        const MAX_ERRORS: usize = 6;
+        let now = std::time::Instant::now();
+        self.error_times.push_back(now);
+        while self
+            .error_times
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > WINDOW)
+        {
+            self.error_times.pop_front();
+        }
+        self.error_times.len() >= MAX_ERRORS
+    }
 }
 
 impl Default for GuildState {
@@ -691,6 +714,7 @@ impl Default for GuildState {
             stop_flag_at: None,
             error_streak: 0,
             recovering: false,
+            error_times: VecDeque::new(),
             cooldown_until: None,
             stay_last_rejoin: None,
             autoplay_history: VecDeque::new(),
@@ -899,6 +923,27 @@ mod tests {
                 .unwrap(),
         );
         assert!(!st.take_fresh_stop(), "stale flag must NOT swallow a natural end");
+    }
+
+    #[test]
+    fn error_rate_trips_on_bursts_not_drips() {
+        let mut st = GuildState::default();
+        for _ in 0..5 {
+            assert!(!st.error_rate_tripped());
+        }
+        // 6th error inside the window trips.
+        assert!(st.error_rate_tripped());
+
+        // Old errors age out of the window.
+        let mut st2 = GuildState::default();
+        for _ in 0..5 {
+            st2.error_times.push_back(
+                std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(300))
+                    .unwrap(),
+            );
+        }
+        assert!(!st2.error_rate_tripped());
     }
 
     #[test]

@@ -110,6 +110,9 @@ impl VoiceEventHandler for GuildTrackEvents {
                 st.playing = false;
                 st.error_streak = st.error_streak.saturating_add(1);
                 let streak = st.error_streak;
+                // Rate-based trip: catches storms where every track starts
+                // (resetting the streak) then dies seconds later.
+                let rate_tripped = st.error_rate_tripped();
                 // Single-flight the recovery flag: check AND set under one lock
                 // hold. The old code read it, dropped the lock, and set it
                 // later — concurrent Error events all saw `false` and fired
@@ -128,8 +131,10 @@ impl VoiceEventHandler for GuildTrackEvents {
 
                 error!(guild = %self.guild_id, streak, "track error");
 
-                if streak >= self.core.cfg.audio.max_consecutive_errors {
-                    warn!(guild = %self.guild_id, "too many consecutive failures; stopping");
+                // Streak trip, or rate trip: storms where every track starts
+                // (resetting the streak) then dies seconds later.
+                if streak >= self.core.cfg.audio.max_consecutive_errors || rate_tripped {
+                    warn!(guild = %self.guild_id, streak, rate_tripped, "too many failures; stopping");
                     let home2 = {
                         let mut st = self.core.registry.get(self.guild_id);
                         clear_queue_and_shrink(&mut st);
@@ -188,7 +193,16 @@ impl VoiceEventHandler for GuildTrackEvents {
                     tokio::time::sleep(Duration::from_millis(500)).await;
 
                     if let Some(vc) = vc {
-                        match self.core.voice.join(self.guild_id, vc).await {
+                        // Bounded: a hung join must never wedge `recovering`
+                        // on forever (every later error would go silent).
+                        let join_res = tokio::time::timeout(
+                            Duration::from_secs(20),
+                            self.core.voice.join(self.guild_id, vc),
+                        )
+                        .await
+                        .map_err(|_| "rejoin timed out after 20s".to_string())
+                        .and_then(|r| r.map_err(|e| e.to_string()));
+                        match join_res {
                             Ok(call) => {
                                 {
                                     let mut handler = call.lock().await;
